@@ -8,11 +8,10 @@ A [Jina AI](https://jina.ai/) plugin (bundle) for DeepSeek Harness: it exposes t
 
 > Only the latest release is listed here; the full version history lives in [change-log.en.md](./change-log.en.md).
 
-### 0.5.2 (2026-08-29)
+### 0.5.3 (2026-09-05)
 
-- **fix** Fix the `Failed to load plugins` page after installing the plugin (`failed to import loader entry … (dsh-jina): client-modules: bundle … loaded without registering "dsh-jina"`): 0.5.1 renamed the composition row to the exact package name `dsh-jina`, but the browser bundle still registered under the old row name `dsh-jina/ui` — the module system only matches a registration against the graph row id (exact package name; `stripClientSuffix` trims only a trailing `/client`), so `dsh-jina/ui` landed on a key nobody asks for, `arrive()` saw no `dsh-jina` factory, and the script "loaded without registering". Fix: registration id is now the graph row id `dsh-jina`.
-- **fix** Use the standard injection for the credential namespace: per the api-gateway client sources, `remote.credentials` is its own cordis **service** registered by `$mount` (`Service(ctx, 'remote.credentials')`, via `remoteServiceKey('credentials')`) — not a property on the `remote` object; the old code read `.credentials` from `ctx.get('remote')` and got `undefined`. The plugin `inject` now includes `'remote.credentials'` and the card receives that service directly (`describe/set/unset` and the `credentials/reference-updated` event, still forwarded by `remote`, are unchanged).
-- **docs** Update "Development notes".
+- **compat** Verified against dsh v0.1.3-alpha.1: the breaking changes (`SessionHandle` / async `agentLoop.create()` / session lock / Session format v2) are host-internal and untouched by this plugin — every used face (`tools.register`, `credentials.resolve`, `remote.credentials` injection, `credentials/reference-updated`, `webServer.register`, `settings.register`, the `settings.plugin.item` card, the `__ModuleLoader__` registration id, the `subprocess.spawn` contract) was checked against the 0.1.3 sources with no migration needed.
+- **fix** Proxy environment aligned with the 0.1.3 outbound policy: with no discovered/overridden proxy the harness startup-environment proxy (`HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY` / `NO_PROXY`) is inherited untouched (`NO_PROXY` no longer wiped); with a proxy both env-name casings are written and `NODE_USE_ENV_PROXY` is carried for http(s) only. Windows system-proxy discovery (WinINET, with port-change self-healing) stays as the complement.
 
 ## Features
 
@@ -95,7 +94,7 @@ A key saved on the settings page takes effect immediately (no restart needed; re
 
 ## Network & proxy (mainland China users)
 
-Jina domains are blocked on direct connections and require a VPN. The plugin reaches Jina through the system proxy: before every call it discovers the system proxy address from the WinINET registry, and on transfer failure it re-discovers and retries once — it self-heals when a VPN restart changes the port. When the VPN is off, the tools return an error message with hints.
+Jina domains are blocked on direct connections and require a VPN. The plugin inherits the dsh 0.1.3+ startup-environment proxy (`HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY` / `NO_PROXY`, handed to the network helper automatically via `subprocess`) and layers the Windows system proxy on top: before every call it discovers the system proxy address from the WinINET registry, and on transfer failure it re-discovers and retries once — it self-heals when a VPN restart changes the port. When the VPN is off, the tools return an error message with hints.
 
 ## Uninstall
 

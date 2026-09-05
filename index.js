@@ -22,11 +22,13 @@
  *   4. `jina-api-key.txt` in the dsh home directory (`$DSH_HOME` or `~/.dsh`).
  *
  * Network transport: the Jina endpoints are contacted through a small
- * `node -e` fetch helper spawned via the host `subprocess` service, with
- * NODE_USE_ENV_PROXY enabled so Node's fetch honors the system proxy (the
- * local VPN on Windows). The proxy address is discovered from the WinINET
- * registry settings before each call and rediscovered automatically when a
- * transport failure suggests the proxy port changed.
+ * `node -e` fetch helper spawned via the host `subprocess` service. The
+ * spawn environment inherits the harness-resolved proxy policy (dsh 0.1.3+:
+ * HTTP_PROXY/HTTPS_PROXY/ALL_PROXY/NO_PROXY from the startup environment),
+ * and the Windows system proxy (the local VPN) is layered on top: its
+ * address is discovered from the WinINET registry settings before each call
+ * and rediscovered automatically when a transport failure suggests the proxy
+ * port changed.
  */
 
 import { homedir } from 'node:os'
@@ -270,8 +272,22 @@ export function apply(ctx) {
       timeoutMs: spec.timeoutMs || 60000,
     })
     const makeEnv = (p) => {
-      const env = { NODE_USE_ENV_PROXY: '1', NO_PROXY: '' }
-      if (p) { env.HTTPS_PROXY = p; env.HTTP_PROXY = p }
+      // dsh 0.1.3+: the subprocess seam merges `env` over a scrubbed parent
+      // base that already carries the harness-resolved proxy policy
+      // (HTTP_PROXY/HTTPS_PROXY/ALL_PROXY/NO_PROXY from the startup
+      // environment + NODE_USE_ENV_PROXY). Returning `undefined` inherits
+      // that base untouched; only a discovered/overridden proxy layers on
+      // top — and it never clobbers NO_PROXY (the base merges the user's
+      // list with the loopback bypass). WinINET discovery stays as the
+      // Windows complement to the env-only policy the harness resolves.
+      if (p === undefined || p === null || p === '') return undefined
+      let proxy = String(p)
+      if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(proxy)) proxy = 'http://' + proxy
+      const env = { HTTP_PROXY: proxy, HTTPS_PROXY: proxy, http_proxy: proxy, https_proxy: proxy }
+      // Mirror the harness: Node parses proxy vars at startup under this
+      // flag and exits on non-http(s) schemes, so a SOCKS value rides along
+      // for non-Node consumers without the flag.
+      if (/^https?:\/\//i.test(proxy)) env.NODE_USE_ENV_PROXY = '1'
       return env
     }
     const parse = (r) => {

@@ -8,11 +8,10 @@ DeepSeek Harness 的 [Jina AI](https://jina.ai/) 插件（bundle）：把 jina-c
 
 > 此处仅展示最新版本，完整版本历史见 [change-log.md](./change-log.md)。
 
-### 0.5.2（2026-08-29）
+### 0.5.3（2026-09-05）
 
-- **fix** 修复插件安装后 Web 页面报 `Failed to load plugins` 的问题（`failed to import loader entry … (dsh-jina): client-modules: bundle … loaded without registering "dsh-jina"`）：0.5.1 把组合行改成了精确包名 `dsh-jina`，但浏览器 bundle 里 `window.__ModuleLoader__.load` 的注册 id 仍是旧行名 `dsh-jina/ui`——模块系统只对图行 id（精确包名，`/client` 后缀除外）做匹配，`dsh-jina/ui` 注册在没人要的键上，加载即报「未注册」。修复：注册 id 改为 `dsh-jina`。
-- **fix** 凭据命名空间改为标准注入：`remote.credentials` 在 0.1.2-alpha.1 是由 gateway `$mount` 注册的**独立服务**（`Service(ctx, 'remote.credentials')`），不再挂在 `remote` 对象上；插件 `inject` 增加 `'remote.credentials'`，卡片直接接收该服务（`describe/set/unset` 契约与事件 `credentials/reference-updated` 不变）。
-- **docs** 更新「开发说明」。
+- **compat** 兼容 dsh v0.1.3-alpha.1：破坏性变更（`SessionHandle` / 异步 `agentLoop.create()` / session 锁 / Session format v2）均为宿主内部面，插件未使用这些 API，已逐项对照源码确认无需迁移（`tools.register`、`credentials.resolve`、`remote.credentials` 注入、`credentials/reference-updated` 事件、`webServer.register`、`settings.register`、`settings.plugin.item` 卡片、`__ModuleLoader__` 注册 id、`subprocess.spawn` 契约均未变化）。
+- **fix** 代理环境对齐 0.1.3 出站代理策略：无发现/覆盖代理时完整继承 harness 启动环境代理（`HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY` / `NO_PROXY`），不再抹掉 `NO_PROXY`；有代理时同时写大小写两套变量，仅 http(s) 才带 `NODE_USE_ENV_PROXY`。Windows 系统代理（WinINET 发现，含端口变化自愈）仍作为补充保留。
 
 ## 功能
 
@@ -96,7 +95,7 @@ dsh --profile web
 
 ## 网络与代理（中国大陆用户）
 
-Jina 域名被直连网络屏蔽，需要 VPN。插件通过系统代理访问 Jina：每次调用前从 WinINET 注册表发现系统代理地址，传输失败时自动重新发现并重试一次——VPN 重启换了端口也能自愈。VPN 未开时工具会返回带提示的错误信息。
+Jina 域名被直连网络屏蔽，需要 VPN。插件继承 dsh 0.1.3+ 解析的启动环境代理（`HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY` / `NO_PROXY`，经 `subprocess` 自动带给网络 helper），并在此之上叠加 Windows 系统代理：每次调用前从 WinINET 注册表发现系统代理地址，传输失败时自动重新发现并重试一次——VPN 重启换了端口也能自愈。VPN 未开时工具会返回带提示的错误信息。
 
 ## 卸载
 
