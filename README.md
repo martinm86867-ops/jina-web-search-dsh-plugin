@@ -2,16 +2,19 @@
 
 # dsh-jina
 
-DeepSeek Harness 的 [Jina AI](https://jina.ai/) 插件（bundle）：把 jina-cli 的全部 API 能力以模型工具的形式装进 dsh，并在 Web 设置的**插件 → 配置**页（与 终端 / Agent 循环 / 网页搜索 相同的标准插件配置位置）提供 **Jina Tools** 卡片来配置 API key。
+DeepSeek Harness 的 [Jina AI](https://jina.ai/) 插件（bundle）：把 jina-cli 的全部 API 能力以模型工具的形式装进 dsh，并在 Web 设置的**插件 → 配置**页（与 终端 / Agent 循环 / 网页搜索 相同的标准插件配置位置）提供 **Jina Tools** 卡片来配置 API key 与**本地代理地址**。
 
 ## 更新日志
 
 > 此处仅展示最新版本，完整版本历史见 [change-log.md](./change-log.md)。
 
-### 0.5.3（2026-09-05）
+### 0.6.0（2026-09-15）
 
-- **compat** 兼容 dsh v0.1.3-alpha.1：破坏性变更（`SessionHandle` / 异步 `agentLoop.create()` / session 锁 / Session format v2）均为宿主内部面，插件未使用这些 API，已逐项对照源码确认无需迁移（`tools.register`、`credentials.resolve`、`remote.credentials` 注入、`credentials/reference-updated` 事件、`webServer.register`、`settings.register`、`settings.plugin.item` 卡片、`__ModuleLoader__` 注册 id、`subprocess.spawn` 契约均未变化）。
-- **fix** 代理环境对齐 0.1.3 出站代理策略：无发现/覆盖代理时完整继承 harness 启动环境代理（`HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY` / `NO_PROXY`），不再抹掉 `NO_PROXY`；有代理时同时写大小写两套变量，仅 http(s) 才带 `NODE_USE_ENV_PROXY`。Windows 系统代理（WinINET 发现，含端口变化自愈）仍作为补充保留。
+- **feat** 新增**本地代理手动配置**：卡片新增「本地代理（可选）」输入框，填 `http://127.0.0.1:7897`（可省略协议头）→ 保存即生效，一键清除回到自动检测；值存进插件自己的 `jina-tools` 设置命名空间（`settings.yaml` 可手工编辑）。**代理软件只监听本地端口、未开启系统代理时自动检测看不到它**（WinINET `ProxyEnable=0`），此前只能直连失败。
+- **feat** 代理优先级：设置卡片 > `JINA_PROXY_URL` > Windows 系统代理自动发现 > 启动环境变量；手动配置存在时不再探测注册表，传输失败也不会被自动发现悄悄替换（错误信息点名当前代理）。
+- **feat** 诊断：卡片检测区显示**本次检测实际使用的代理**与来源，并提示已保存但不可用的地址；连接失败的错误信息给出排查方向。
+- **fix** 只把 `http://` / `https://` 代理交给网络 helper（Node fetch 在 `NODE_USE_ENV_PROXY` 下遇到非 http(s) scheme 会直接退出），`socks://` 会被明确拒绝并说明。
+- **test** 新增 proxy 纯函数单测 / mock 宿主集成测试 / 浏览器 bundle 契约测试，共 41 例。
 
 ## 功能
 
@@ -80,7 +83,9 @@ dsh --profile web
 
 然后打开 Web 界面 → 设置 → **插件** → **配置** 选项卡 → 展开 **Jina Tools** 卡片 → 粘贴 API key → 保存。免费 key 在 https://jina.ai/ 获取。
 
-卡片中的 **API key 检测** 区域会实时显示当前 key 的身份（Jina 账号）与余额（credits），并标注 key 的来源（本页保存 / key 文件 / 匿名配额），用于确认 key 是否真正生效；点击「刷新」重新检测（保存/清除 key 后也会自动重检）。该数据由主机端插件通过 `/api/dsh-jina/primer` 路由提供（与 `jina_primer` 工具同一接口），**key 明文永不离开主机**。
+同一张卡片里还有 **本地代理（可选）**：如果你的代理软件只监听本地端口（没有开启系统代理，也没有设置 `HTTP_PROXY` 环境变量），把它的地址填进去即可，例如 `http://127.0.0.1:7897`（可省略 `http://`）→ 保存，下一次工具调用立即生效。代理软件换端口时改这里即可，不需要重启 dsh。
+
+卡片中的 **API key / 连接检测** 区域会实时显示当前 key 的身份（Jina 账号）与余额（credits）、标注 key 的来源（本页保存 / key 文件 / 匿名配额），并显示**本次检测实际使用的代理地址与来源**；点击「刷新」重新检测（保存/清除 key 或代理后也会自动重检）。该数据由主机端插件通过 `/api/dsh-jina/primer` 路由提供（与 `jina_primer` 工具同一接口），**key 明文永不离开主机**；代理地址是明文配置，会显示在页面上。
 
 ## API key 解析顺序
 
@@ -93,9 +98,25 @@ dsh --profile web
 
 设置页保存新 key 后立即生效（无需重启，每次调用即时解析）；HTTP 401 时也会自动重读文件并重试一次。凭据值只通过 `credentials.set` 上行，任何读取接口都不会回传明文。同时支持在页面上一键清除。
 
-## 网络与代理（中国大陆用户）
+## 本地代理（本地网络代理软件）
 
-Jina 域名被直连网络屏蔽，需要 VPN。插件继承 dsh 0.1.3+ 解析的启动环境代理（`HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY` / `NO_PROXY`，经 `subprocess` 自动带给网络 helper），并在此之上叠加 Windows 系统代理：每次调用前从 WinINET 注册表发现系统代理地址，传输失败时自动重新发现并重试一次——VPN 重启换了端口也能自愈。VPN 未开时工具会返回带提示的错误信息。
+Jina 域名被直连网络屏蔽，需要代理。插件的代理解析顺序（每次调用即时解析，改完即生效）：
+
+| 优先级 | 来源 | 说明 |
+| --- | --- | --- |
+| 1 | 设置卡片「本地代理」 | `jina-tools` 命名空间的 `proxyUrl` 字段，最推荐的手动方式 |
+| 2 | 环境变量 `JINA_PROXY_URL` | 没有挂载 settings 提供方的 profile（如 headless）也能用 |
+| 3 | Windows 系统代理 | 从 WinINET 注册表自动发现（`ProxyEnable=1` 时），传输失败会重新发现一次，VPN 换端口可自愈 |
+| 4 | 启动环境变量 | harness 解析的 `HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY` / `NO_PROXY`，由 `subprocess` 自动带给网络 helper |
+
+规则与注意事项：
+
+- **只支持 `http://` 和 `https://` 代理**。网络 helper 是 `node -e` + 全局 `fetch`，靠 `NODE_USE_ENV_PROXY` 识别代理；`socks://` 等 scheme 会让 Node 启动即退出，因此这类地址会被拒绝并在页面/错误信息里说明。
+- **本地代理软件只监听端口、未设为系统代理时**（WinINET `ProxyEnable=0x0`），优先级 3 发现不到它——这正是要在卡片里手填地址的场景。
+- 手动填写的地址**优先于**自动发现；传输失败时插件不会偷偷改用自动发现的代理，而是把当前使用的地址写进错误信息，便于确认端口是否写错。
+- 地址可以省略协议头（`127.0.0.1:7897` 等价于 `http://127.0.0.1:7897`），可以带账号密码（`http://user:pass@127.0.0.1:7897`），路径/查询串会被忽略。
+- 代理地址会明文保存在 dsh 的设置文档（`settings.yaml` 的 `jina-tools` 段）并可被 Web 页面读回；**只在本机受信环境使用**，不要把带凭据的地址提交到公开仓库。
+- 「清除」后回到自动检测（优先级 3 → 4）。
 
 ## 卸载
 
@@ -109,15 +130,19 @@ dsh plugin --profile web remove dsh-jina
 jina-dsh-plugin/
 ├── package.json       # manifest: "dsh": { "bundle": {"patch": ...}, "client": {"platform": "web"} }; 浏览器半身经 exports["./client"] 指向 ui/client.js
 ├── cordis.patch.yml   # 组合层：单个双面孔行 dsh-jina（宿主工具 + 浏览器卡片；行名 = 精确包名是 client-modules 扫描的硬条件）
-├── index.js           # 主机插件：12 个工具（含 jina_search_arxiv / jina_search_ssrn 专用学术检索）+ 网络传输 + JINA_API_KEY 凭据解析
+├── index.js           # 主机插件：12 个工具（含 jina_search_arxiv / jina_search_ssrn 专用学术检索）+ 网络传输 + JINA_API_KEY 凭据解析 + jina-tools 代理设置
+├── proxy.js           # 纯函数模块：代理地址规范化 / 优先级 / 设置 schema（零依赖，可单测）
 ├── primer.js          # 纯函数模块：jina_primer 的解析 / 格式化逻辑（零依赖，可单测）
 ├── test/
-│   ├── primer.test.js # jina_primer 单元测试（node --test 自动发现）
-│   └── tools.test.js  # jina_web_search 模型可见契约测试（TDD）
+│   ├── primer.test.js        # jina_primer 单元测试（node --test 自动发现）
+│   ├── proxy.test.js         # 代理策略单元测试
+│   ├── plugin-proxy.test.js  # mock 宿主的代理集成测试（含可选实时代理用例）
+│   ├── client-bundle.test.js # 浏览器 bundle 契约测试（语法 + 注册 id + settings 通道）
+│   └── tools.test.js         # jina_web_search 模型可见契约测试（TDD）
 ├── ui/
 │   ├── package.json   # 子包 manifest（exports["./client"]；dsh.client 主声明已在根包，此处仅保持子包完整）
 │   ├── index.js       # 空主机半身（保留历史子包结构；组合层不再引用）
-│   └── client.js      # 预构建浏览器 bundle：设置 → 插件 → 配置 的 "Jina Tools" 卡片
+│   └── client.js      # 预构建浏览器 bundle：设置 → 插件 → 配置 的 "Jina Tools" 卡片（API key + 本地代理）
 ├── change-log.md      # 完整版本历史（简体中文）
 ├── change-log.en.md   # 完整版本历史（English）
 ├── README.md          # 简体中文说明（本文件）
@@ -126,17 +151,24 @@ jina-dsh-plugin/
 
 ## 开发说明
 
-- 主机插件只依赖 Node 内置模块与 dsh 主机服务（`fs`、`subprocess`、`tools`、`credentials`），无第三方 npm 依赖；凭据走 dsh 原生的 credential seam（引用 `JINA_API_KEY`），任何 profile 组合都可以直接使用。
-- 客户端 bundle 直接提交（`ui/client.js`），无构建步骤，git 安装开箱即用。改 UI 后直接改该文件并重启即可。bundle 顶层 `window.__ModuleLoader__.load` 的注册 id **必须等于图行 id（精确包名 `dsh-jina`）**——模块系统只按图行 id 匹配注册（`/client` 后缀除外），注册在别的键上（如旧行名 `dsh-jina/ui`）会报 `loaded without registering "dsh-jina"` 并导致整页 `Failed to load plugins`。卡片注册进 Web 设置包声明的 `settings.plugin.item` 插槽（设置 → 插件 → 配置），这是第三方插件配置的标准位置；key 通过标准的凭据 Remote 命名空间管理：`remote.credentials` 是 gateway `$mount` 时注册的**独立服务**（插件 `inject` 里声明 `'remote.credentials'`，不要从 `remote` 对象上取）——`credentials.describe/set/unset`，变更事件 `credentials/reference-updated` 由 `remote` 服务转发；这是唯一对第三方插件开放的配置通道，settings 命名空间对浏览器有白名单限制。
+- 主机插件只依赖 Node 内置模块与 dsh 主机服务（`fs`、`subprocess`、`tools`、`credentials`、`settings`、`webServer`），无第三方 npm 依赖；凭据走 dsh 原生的 credential seam（引用 `JINA_API_KEY`），代理配置走插件自己的 `jina-tools` 设置命名空间（`proxyUrl` 字段，schema 是零依赖的 duck-type 节点，见 `proxy.js` 的 `createSettingsSchema`），任何 profile 组合都可以直接使用。
+- 客户端 bundle 直接提交（`ui/client.js`），无构建步骤，git 安装开箱即用。改 UI 后直接改该文件并重启即可。bundle 顶层 `window.__ModuleLoader__.load` 的注册 id **必须等于图行 id（精确包名 `dsh-jina`）**——模块系统只按图行 id 匹配注册（`/client` 后缀除外），注册在别的键上（如旧行名 `dsh-jina/ui`）会报 `loaded without registering "dsh-jina"` 并导致整页 `Failed to load plugins`。卡片注册进 Web 设置包声明的 `settings.plugin.item` 插槽（设置 → 插件 → 配置），这是第三方插件配置的标准位置；key 通过标准的凭据 Remote 命名空间管理：`remote.credentials` 是 gateway `$mount` 时注册的**独立服务**（插件 `inject` 里声明 `'remote.credentials'`，不要从 `remote` 对象上取）——`credentials.describe/set/unset`，变更事件 `credentials/reference-updated` 由 `remote` 服务转发。代理字段走同一 gateway 的 `settings` Remote 命名空间（`remote.settings.describe/mutate`，写入按读到的 `revision` 设栅；外部编辑由转发事件 `settings/document-updated` 触发热重读）。
 - 组合层遵循 dsh 约定：单个双面孔行 `dsh-jina` 同时携带宿主半身与浏览器半身。浏览器半身由**根 manifest** 的 `dsh.client`（platform: web，图边注入 `@deepseek-ai/dsh-api-remotes`）与 `exports["./client"]` 声明，host 的 client-modules 服务扫描时按行名（精确包名）定位根 manifest 并接入 Web boot graph。注意 client-modules 扫描只接受精确包名行：子路径行（如 `dsh-jina/ui`）永远不会被扫描为客户端行——浏览器半身必须声明在根包。
 
 ## 测试
 
-纯函数逻辑（primer 解析/格式化等）使用 Node 内置测试运行器，零依赖：
+纯函数逻辑（代理策略、primer 解析/格式化等）使用 Node 内置测试运行器，零依赖：
 
 ```sh
 npm test   # 等价于 node --test（自动发现 test/*.test.js）
 ```
 
-测试用真实抓取的 r.jina.ai / ipinfo.io 响应形状作为 fixture，覆盖解析容错、
-时间事实推导、文本/JSON 两种渲染与“不输出 undefined”等契约。
+- `test/proxy.test.js`、`test/primer.test.js`、`test/tools.test.js`：纯函数与模型可见契约。
+- `test/plugin-proxy.test.js`：用假 Cordis 上下文驱动主机半身，断言设置命名空间注册、代理优先级、**网络 helper 实际收到的环境变量**、错误文案与 `/api/dsh-jina/primer` 负载。其中带 `JINA_LIVE_PROXY=1` 的用例会真实 spawn helper 打通一次 Jina 请求（干净环境 + 手填代理，用来证明是手填地址而非残留环境变量在起作用）：
+
+  ```powershell
+  $env:JINA_LIVE_PROXY='1'; $env:JINA_LIVE_PROXY_URL='http://127.0.0.1:7897'; npm test
+  ```
+
+  在无法 spawn 子进程的沙箱里该用例会自动跳过并说明原因。
+- `test/client-bundle.test.js`：解析预构建的 `ui/client.js` 并固化注册 id、`jina-tools` key、settings 通道与 revision 栅栏——bundle 没有构建步骤，语法错误只能在运行时暴露。

@@ -2,6 +2,17 @@
 
 本文件记录 dsh-jina 的完整版本历史；[README.md](./README.md) 的「更新日志」一节只保留最新版本。
 
+### 0.6.0（2026-09-15）
+
+- **feat** 新增**本地代理手动配置**：设置 → 插件 → 配置 → **Jina Tools** 卡片新增「本地代理（可选）」区块，直接填代理地址（如 `http://127.0.0.1:7897`，可省略协议头）→ 保存即生效，一键清除回到自动检测。值写入插件自己的 `jina-tools` 设置命名空间的 `proxyUrl` 字段（由 settings 文档持久化，也可直接编辑 `settings.yaml`），不再只依赖自动发现。这解决的是「代理软件只监听本地端口、没有开启系统代理」的场景：WinINET 的 `ProxyEnable` 为 0，自动检测看不到它，之前的版本会直连失败。
+- **feat** 代理解析优先级（`proxy.js` 纯函数，可单测）：工具级 override > 设置卡片 `proxyUrl` > 环境变量 `JINA_PROXY_URL` > WinINET 系统代理自动发现（VPN 换端口自愈保留）> 继承启动环境的 `HTTP_PROXY` / `HTTPS_PROXY`。手动配置存在时不再探测注册表；手动配置的地址在传输失败时不会被自动发现悄悄替换（错误信息会点名它，便于排查）。
+- **feat** 诊断可见：`/api/dsh-jina/primer`（卡片检测区）现在返回**本次检测实际使用的代理地址与来源**，以及已保存但不可用的地址（含原因，如 `socks://` 不被 Node fetch helper 支持）；工具连接失败的错误信息会点名当前代理并给出下一步（确认端口 / 清除回自动检测 / 填写本地代理）。
+- **fix** 只有 `http://` / `https://` 代理会交给网络 helper：Node 的 `fetch` 在 `NODE_USE_ENV_PROXY` 下遇到非 http(s) scheme 会直接退出，因此 `socks5://` 等地址会被明确拒绝并提示，而不是被静默忽略或让 helper 启动失败。
+- **refactor** 代理策略与设置 schema 抽为纯函数模块 `proxy.js`（零依赖）；网络 helper 脚本导出为 `HTTP_HELPER_SCRIPT`，便于端到端验证。
+- **test** 新增 `test/proxy.test.js`（20 例纯函数契约）、`test/plugin-proxy.test.js`（13 例 mock 宿主集成：设置注册、优先级、helper 环境变量构造、错误文案、primer 负载；含 1 例可选实时代理用例，`JINA_LIVE_PROXY=1` 时真实 spawn helper 打通 `http://127.0.0.1:7897`）、`test/client-bundle.test.js`（8 例浏览器 bundle 契约：注册 id / 命名空间 key / settings 通道 / revision 栅栏——bundle 无构建步骤，语法错误只能在运行时暴露）。
+- **verify** 用真实组件逐项核对（非 mock）：把 `createSettingsSchema()` 注册进真实的 `@deepseek-ai/dsh-settings-file` 提供方，走真实 `settings.register` / `mutate` / `describe({redactSecrets:true})`（写入 `settings.yaml`、revision 递增、`secrets: []` 不按密文处理），再用真实 schemastery 3.18.2 的 `new Schema(serialized)` 重水合浏览器侧 schema（接受字符串、拒绝数字）；随后以真实设置服务驱动插件跑一次工具调用，确认写入地址出现在 helper 环境变量（大小写两套 + `NODE_USE_ENV_PROXY=1`）且不再探测注册表，清除后回到 `undefined`（完整继承 harness 环境）。另外用干净环境 + 真实 helper 脚本在独立 node 进程中实测：`HTTPS_PROXY=http://127.0.0.1:7897` + `NODE_USE_ENV_PROXY=1` → `r.jina.ai` 返回 200；换成 `127.0.0.1:1` → `fetch failed (connect ECONNREFUSED 127.0.0.1:1)`，即错误信息里点名代理地址的那条路径。
+- **docs** README 新增「本地代理」章节（配置步骤、优先级、`JINA_PROXY_URL`、只在受信本机使用）；开发说明补充 proxy.js 与测试说明。
+
 ### 0.5.3（2026-09-05）
 
 - **compat** 核对 dsh v0.1.3-alpha.1（[releases](https://github.com/deepseek-ai/deepseek-harness/releases)）：截图中的破坏性变更（Session persistence API 改为由生命周期持有的 `SessionHandle`；`agentLoop.create()` 改异步；新增 session 锁，同一 session 至多被一个进程持有；Session format 升级至 v2）均为宿主内部面——插件仅使用 `tools` / `subprocess` / `fs` / `credentials` / `webServer` / `settings` / `sandboxPolicy` 与 `exec.agent.session.header.cwd` / `exec.signal`，已逐项对照 0.1.3 源码确认无需迁移：`tools.register` 参数规范化（`normalizeRegisteredParameters`）、`output {schema, render}`、`credentials.resolve`、独立服务 `remote.credentials` 注入、`credentials/reference-updated` 事件（仍由 `remote` 转发）、`webServer.register`（exact 路由）、空命名空间 `settings.register`、keyed slot `settings.plugin.item`（`key: 'jina-tools'`）、`window.__ModuleLoader__` 注册 id（图行 id 精确包名 `dsh-jina`）、`subprocess.spawn`（`handle.done` 的 `SubprocessOutcome` + `collected` 偏移读取 + `resolveExecutable`）均未变化。同步核对 oh-my-dsh 升级卡 0.1.2-alpha.1 → rc.1（`RemoteError` 命名空间、`Session.events` 移除、`report` → `send_message`、PTC `workflow` / `web_fetch` 默认值等）：本插件均未命中，无需改动。

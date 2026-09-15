@@ -2,16 +2,19 @@
 
 # dsh-jina
 
-A [Jina AI](https://jina.ai/) plugin (bundle) for DeepSeek Harness: it exposes the full jina-cli API surface to the model as tool calls, and adds a **Jina Tools** card under **Plugins → Configuration** in the Web settings (the same standard plugin configuration location as Terminal / Agent Loop / Web Search) to configure your API key.
+A [Jina AI](https://jina.ai/) plugin (bundle) for DeepSeek Harness: it exposes the full jina-cli API surface to the model as tool calls, and adds a **Jina Tools** card under **Plugins → Configuration** in the Web settings (the same standard plugin configuration location as Terminal / Agent Loop / Web Search) to configure your API key and a **local proxy address**.
 
 ## Changelog
 
 > Only the latest release is listed here; the full version history lives in [change-log.en.md](./change-log.en.md).
 
-### 0.5.3 (2026-09-05)
+### 0.6.0 (2026-09-15)
 
-- **compat** Verified against dsh v0.1.3-alpha.1: the breaking changes (`SessionHandle` / async `agentLoop.create()` / session lock / Session format v2) are host-internal and untouched by this plugin — every used face (`tools.register`, `credentials.resolve`, `remote.credentials` injection, `credentials/reference-updated`, `webServer.register`, `settings.register`, the `settings.plugin.item` card, the `__ModuleLoader__` registration id, the `subprocess.spawn` contract) was checked against the 0.1.3 sources with no migration needed.
-- **fix** Proxy environment aligned with the 0.1.3 outbound policy: with no discovered/overridden proxy the harness startup-environment proxy (`HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY` / `NO_PROXY`) is inherited untouched (`NO_PROXY` no longer wiped); with a proxy both env-name casings are written and `NODE_USE_ENV_PROXY` is carried for http(s) only. Windows system-proxy discovery (WinINET, with port-change self-healing) stays as the complement.
+- **feat** **Manual local-proxy configuration**: the card gains a "Local proxy (optional)" field — type `http://127.0.0.1:7897` (the scheme may be omitted), save, and the next call uses it; one click clears it back to automatic detection. The value lives in the plugin's `jina-tools` settings namespace (`settings.yaml` can be hand-edited). This is the fix for a proxy client that only listens on a loopback port without being the system proxy — WinINET reports `ProxyEnable=0`, discovery cannot see it, and earlier versions went direct and failed.
+- **feat** Proxy precedence: card setting > `JINA_PROXY_URL` > WinINET system-proxy discovery > inherited startup environment. A configured address skips the registry probe, and a transport failure never silently swaps it for an auto-discovered one — the error names it instead.
+- **feat** Diagnostics: the card's health check shows the proxy the probe actually ran through (and its source), plus any saved-but-unusable address; transport failures state the next step.
+- **fix** Only `http://` / `https://` proxies reach the network helper (Node's `fetch` exits at startup under `NODE_USE_ENV_PROXY` when it sees another scheme), so a `socks://` address is refused with an explanation.
+- **test** 41 new cases across proxy policy, mock-host integration, and browser-bundle contracts.
 
 ## Features
 
@@ -79,7 +82,9 @@ dsh --profile web
 
 Then open the Web UI → Settings → **Plugins** → **Configuration** tab → expand the **Jina Tools** card → paste your API key → Save. Get a free key at https://jina.ai/.
 
-The card's **API key detection** section shows the current key's identity (Jina account) and balance (credits) in real time, and marks the key's source (saved on this page / key file / anonymous quota) so you can confirm the key is actually in effect; click **Refresh** to re-check (saving/clearing the key also triggers an automatic re-check). This data is served by the host-side plugin through the `/api/dsh-jina/primer` route (the same endpoint the `jina_primer` tool uses); **the plaintext key never leaves the host**.
+The same card carries **Local proxy (optional)**: if your proxy client only listens on a loopback port (no system proxy, no `HTTP_PROXY` environment variable), type its address there — e.g. `http://127.0.0.1:7897` (the scheme is optional) → Save, and the next tool call uses it. When the proxy moves to another port, update this field; no dsh restart required.
+
+The card's **API key / connection check** section shows the current key's identity (Jina account) and balance (credits), marks the key's source (saved on this page / key file / anonymous quota), and reports **the proxy address the check actually ran through**; click **Refresh** to re-check (saving or clearing the key or the proxy also triggers an automatic re-check). This data is served by the host-side plugin through the `/api/dsh-jina/primer` route (the same endpoint the `jina_primer` tool uses); **the plaintext key never leaves the host**, while the proxy address is plaintext configuration and is displayed on the page.
 
 ## API key resolution order
 
@@ -92,9 +97,25 @@ Each tool call looks up the key in the following order (first hit wins):
 
 A key saved on the settings page takes effect immediately (no restart needed; resolved on every call). On HTTP 401 the plugin re-reads the file and retries once. Credential values are only ever sent up through `credentials.set`; no read endpoint returns the plaintext. You can also clear the key with one click on the page.
 
-## Network & proxy (mainland China users)
+## Local proxy (a local proxy client)
 
-Jina domains are blocked on direct connections and require a VPN. The plugin inherits the dsh 0.1.3+ startup-environment proxy (`HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY` / `NO_PROXY`, handed to the network helper automatically via `subprocess`) and layers the Windows system proxy on top: before every call it discovers the system proxy address from the WinINET registry, and on transfer failure it re-discovers and retries once — it self-heals when a VPN restart changes the port. When the VPN is off, the tools return an error message with hints.
+Jina domains are blocked on direct connections and need a proxy. The plugin resolves a proxy on every call (changes take effect immediately):
+
+| Priority | Source | Notes |
+| --- | --- | --- |
+| 1 | The card's "Local proxy" | the `proxyUrl` field of the `jina-tools` namespace — the recommended manual path |
+| 2 | `JINA_PROXY_URL` environment variable | for profiles without a settings provider (e.g. headless) |
+| 3 | Windows system proxy | discovered from the WinINET registry (when `ProxyEnable=1`); re-discovered once after a transport failure, so a VPN port change self-heals |
+| 4 | Startup environment | the harness-resolved `HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY` / `NO_PROXY`, handed to the network helper by `subprocess` |
+
+Rules and caveats:
+
+- **Only `http://` and `https://` proxies are supported.** The network helper is `node -e` plus the global `fetch`, which honors proxy variables under `NODE_USE_ENV_PROXY`; any other scheme makes Node exit at startup, so such an address is refused with an explanation instead of being ignored or breaking the helper.
+- **When the proxy client only listens on a port without being the system proxy** (WinINET `ProxyEnable=0x0`), priority 3 cannot see it — that is exactly the case the manual field exists for.
+- A manually configured address **outranks** automatic discovery, and a transport failure never silently swaps it for a discovered one: the error names the address in use so a wrong port is obvious.
+- The scheme may be omitted (`127.0.0.1:7897` equals `http://127.0.0.1:7897`), credentials are allowed (`http://user:pass@127.0.0.1:7897`), and any path/query is dropped.
+- The address is stored in plaintext in dsh's settings document (the `jina-tools` section of `settings.yaml`) and is readable by the Web page — **use it only on a trusted local machine** and never commit an address carrying credentials.
+- **Clear** returns to automatic detection (priority 3 → 4).
 
 ## Uninstall
 
@@ -108,15 +129,19 @@ dsh plugin --profile web remove dsh-jina
 jina-dsh-plugin/
 ├── package.json       # manifest: "dsh": { "bundle": {"patch": ...}, "client": {"platform": "web"} }; the browser half is exported via exports["./client"] → ui/client.js
 ├── cordis.patch.yml   # composition layer: one dual-face row dsh-jina (host tools + browser card; an exact-package-name row name is a hard requirement of the client-modules scan)
-├── index.js           # host plugin: 12 tools (incl. dedicated jina_search_arxiv / jina_search_ssrn academic search) + network transport + JINA_API_KEY credential resolution
+├── index.js           # host plugin: 12 tools (incl. dedicated jina_search_arxiv / jina_search_ssrn academic search) + network transport + JINA_API_KEY credential resolution + the jina-tools proxy setting
+├── proxy.js           # pure module: proxy address normalization / precedence / settings schema (zero deps, unit-testable)
 ├── primer.js          # pure module: jina_primer parsing/formatting logic (zero deps, unit-testable)
 ├── test/
-│   ├── primer.test.js # jina_primer unit tests (auto-discovered by node --test)
-│   └── tools.test.js  # jina_web_search model-facing contract tests (TDD)
+│   ├── primer.test.js        # jina_primer unit tests (auto-discovered by node --test)
+│   ├── proxy.test.js         # proxy policy unit tests
+│   ├── plugin-proxy.test.js  # mock-host proxy integration tests (incl. an opt-in live-proxy case)
+│   ├── client-bundle.test.js # browser-bundle contract tests (syntax + registration id + settings transport)
+│   └── tools.test.js         # jina_web_search model-facing contract tests (TDD)
 ├── ui/
 │   ├── package.json   # subpackage manifest (exports["./client"]; the dsh.client declaration now lives in the root manifest)
 │   ├── index.js       # empty host half (kept for the historical subpackage shape; the composition no longer references it)
-│   └── client.js      # prebuilt browser bundle: the "Jina Tools" card under Settings → Plugins → Configuration
+│   └── client.js      # prebuilt browser bundle: the "Jina Tools" card (API key + local proxy) under Settings → Plugins → Configuration
 ├── change-log.md      # full changelog (Simplified Chinese)
 ├── change-log.en.md   # full changelog (English)
 ├── README.md          # Simplified Chinese README
@@ -125,18 +150,28 @@ jina-dsh-plugin/
 
 ## Development notes
 
-- The host plugin only depends on Node built-ins and dsh host services (`fs`, `subprocess`, `tools`, `credentials`) — no third-party npm dependencies; credentials go through dsh's native credential seam (referencing `JINA_API_KEY`), so it works with any profile composition out of the box.
-- The client bundle is committed directly (`ui/client.js`), no build step — git installs work as-is. To change the UI, edit that file and restart. The registration id in the bundle's top-level `window.__ModuleLoader__.load` MUST equal the graph row id (the exact package name `dsh-jina`) — the module system matches registrations only by row id (a trailing `/client` excepted); registering under any other key (e.g. the old row name `dsh-jina/ui`) fails the whole page with `loaded without registering "dsh-jina"` + `Failed to load plugins`. The card registers into the `settings.plugin.item` slot declared by the Web settings package (Settings → Plugins → Configuration), the standard place for third-party plugin configuration; the key is managed via the standard credential Remote namespace: `remote.credentials` is its own **service** registered by the gateway's `$mount` (declare `'remote.credentials'` in the plugin `inject`; do not read it off the `remote` object) — `credentials.describe/set/unset`, with the change event `credentials/reference-updated` forwarded by `remote`; this is the only configuration channel open to third-party plugins (the settings namespace is allowlist-restricted for browsers).
+- The host plugin only depends on Node built-ins and dsh host services (`fs`, `subprocess`, `tools`, `credentials`, `settings`, `webServer`) — no third-party npm dependencies; credentials go through dsh's native credential seam (referencing `JINA_API_KEY`) and the proxy setting through the plugin's own `jina-tools` namespace (`proxyUrl`, a zero-dependency duck-typed schemastery node built by `createSettingsSchema` in `proxy.js`), so it works with any profile composition out of the box.
+- The client bundle is committed directly (`ui/client.js`), no build step — git installs work as-is. To change the UI, edit that file and restart. The registration id in the bundle's top-level `window.__ModuleLoader__.load` MUST equal the graph row id (the exact package name `dsh-jina`) — the module system matches registrations only by row id (a trailing `/client` excepted); registering under any other key (e.g. the old row name `dsh-jina/ui`) fails the whole page with `loaded without registering "dsh-jina"` + `Failed to load plugins`. The card registers into the `settings.plugin.item` slot declared by the Web settings package (Settings → Plugins → Configuration), the standard place for third-party plugin configuration; the key is managed via the standard credential Remote namespace: `remote.credentials` is its own **service** registered by the gateway's `$mount` (declare `'remote.credentials'` in the plugin `inject`; do not read it off the `remote` object) — `credentials.describe/set/unset`, with the change event `credentials/reference-updated` forwarded by `remote`. The proxy field rides the same gateway's `settings` Remote namespace (`remote.settings.describe/mutate`, each write fenced by the `revision` the page read, with external edits arriving as the forwarded `settings/document-updated`).
 - The composition layer follows dsh conventions: one dual-face row `dsh-jina` carries both the host half and the browser half. The browser half is declared by the ROOT manifest's `dsh.client` (platform: web, graph edge `@deepseek-ai/dsh-api-remotes`) plus `exports["./client"]`; the host's client-modules service locates the root manifest by the row name (an exact package name) and wires it into the Web boot graph. Note the client-modules scan accepts only exact-package-name rows: subpath rows (e.g. `dsh-jina/ui`) are never scanned as client rows — the browser half must be declared at the package root.
 
 ## Tests
 
-Pure logic (primer parsing/formatting, etc.) is covered by the Node built-in test
-runner with zero dependencies:
+Pure logic (proxy policy, primer parsing/formatting, etc.) is covered by the Node
+built-in test runner with zero dependencies:
 
 ```sh
 npm test   # same as node --test (auto-discovers test/*.test.js)
 ```
+
+- `test/proxy.test.js`, `test/primer.test.js`, `test/tools.test.js`: pure functions and the model-facing contract.
+- `test/plugin-proxy.test.js`: drives the host half through a fake Cordis context and asserts the settings-namespace registration, proxy precedence, **the environment the network helper actually receives**, the error text, and the `/api/dsh-jina/primer` payload. Its `JINA_LIVE_PROXY=1` case really spawns the helper and completes one Jina request (clean environment + the manual address, proving the saved address — not a leftover environment variable — carried it):
+
+  ```powershell
+  $env:JINA_LIVE_PROXY='1'; $env:JINA_LIVE_PROXY_URL='http://127.0.0.1:7897'; npm test
+  ```
+
+  Where child processes cannot be spawned (a sandboxed runner) that case skips itself with the reason.
+- `test/client-bundle.test.js`: parses the prebuilt `ui/client.js` and pins the registration id, the `jina-tools` key, the settings transport, and revision fencing — the bundle has no build step, so a syntax error would otherwise surface only at runtime.
 
 Fixtures use real captured r.jina.ai / ipinfo.io response shapes; tests cover
 parse tolerance, time-fact derivation, text/JSON rendering and the

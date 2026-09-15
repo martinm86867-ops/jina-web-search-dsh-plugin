@@ -10,8 +10,10 @@
 # one row.
 #
 # The API key lives in the host credential seam (reference JINA_API_KEY,
-# written by the web settings page via credentials.set) — this patch defines
-# no settings.
+# written by the web settings page via credentials.set). The `jina-tools`
+# settings namespace this row serves carries one field — `proxyUrl`, the
+# manually configured local proxy address the card writes and the transport
+# reads per operation. This patch itself defines no settings.
 - insert:
     - id: jina-tools
       name: dsh-jina

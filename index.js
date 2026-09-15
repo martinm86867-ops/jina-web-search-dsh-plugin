@@ -10,8 +10,9 @@
  * writes it through `credentials.set`, and this plugin resolves it per
  * operation (the seam's contract: never cache across operations). The web
  * settings pairing: this host half serves the `jina-tools` settings
- * namespace and the browser half registers its card for that namespace, so
- * the Settings → Plugins tab (Settings → Plugins → Configure) renders the
+ * namespace — whose `proxyUrl` field carries a manually configured local
+ * proxy address — and the browser half registers its card for that namespace,
+ * so the Settings → Plugins tab (Settings → Plugins → Configure) renders the
  * card only when the two halves agree.
  *
  * The API key is resolved per call in this order:
@@ -25,19 +26,68 @@
  * `node -e` fetch helper spawned via the host `subprocess` service. The
  * spawn environment inherits the harness-resolved proxy policy (dsh 0.1.3+:
  * HTTP_PROXY/HTTPS_PROXY/ALL_PROXY/NO_PROXY from the startup environment),
- * and the Windows system proxy (the local VPN) is layered on top: its
- * address is discovered from the WinINET registry settings before each call
- * and rediscovered automatically when a transport failure suggests the proxy
- * port changed.
+ * and a proxy is layered on top in this order (proxy.js owns the policy):
+ *   1. a manual address from the "Jina Tools" settings card (`jina-tools` →
+ *      `proxyUrl`) — the fix for a local proxy client that listens on a
+ *      loopback port WITHOUT being the system proxy, which no automatic
+ *      discovery can see,
+ *   2. the `JINA_PROXY_URL` environment variable (headless profiles),
+ *   3. the Windows system proxy (WinINET registry), rediscovered
+ *      automatically when a transport failure suggests the port changed.
+ * The card's health check (`/api/dsh-jina/primer`) reports the proxy actually
+ * in effect, and transport failures name it, so a misconfigured address is
+ * visible instead of looking like a generic network outage.
  */
 
 import { homedir } from 'node:os'
 import { buildPrimer, formatPrimer, parseIpInfo, parseJinaRoot } from './primer.js'
+import {
+  PROXY_ENV_VAR, SETTINGS_NAMESPACE,
+  createSettingsSchema, describeRejectReason, proxySettingOf, selectProxy,
+} from './proxy.js'
 import { WEB_SEARCH_TOOL } from './tool-contracts.js'
 
 export const name = 'dsh-jina'
 
 export const inject = ['fs', 'subprocess', 'tools']
+
+/**
+ * The network helper: a self-contained CommonJS script run as
+ * `node -e <script>` by the host `subprocess` service. It reads one JSON
+ * request from stdin and writes one JSON result to stdout, so the transport
+ * never depends on a bundled HTTP client. Exported because it is the exact
+ * code a proxy misconfiguration has to be diagnosed against (see
+ * test/plugin-proxy.test.js and README → 开发说明).
+ */
+export const HTTP_HELPER_SCRIPT = [
+  "const fs = require('fs')",
+  "let input = ''",
+  "process.stdin.setEncoding('utf8')",
+  "process.stdin.on('data', function (c) { input += c })",
+  "process.stdin.on('end', function () {",
+  "  let req = {}",
+  "  try { req = JSON.parse(input || '{}') } catch (e) {",
+  "    process.stdout.write(JSON.stringify({ ok: false, status: 0, text: 'bad request json: ' + e.message }), function () { process.exit(0) })",
+  "    return",
+  "  }",
+  "  setTimeout(function () { process.exit(1) }, ((req && req.timeoutMs) || 60000) + 20000).unref()",
+  "  try {",
+  "    const options = { method: req.method || 'POST', headers: req.headers || {}, redirect: 'follow', signal: AbortSignal.timeout(req.timeoutMs || 60000) }",
+  "    if (req.body !== undefined && req.body !== null) options.body = req.body",
+  "    fetch(req.url, options).then(async function (res) {",
+  "      const text = await res.text()",
+  "      process.stdout.write(JSON.stringify({ ok: res.status >= 200 && res.status < 300, status: res.status, text: text }), function () { process.exit(0) })",
+  "    }).catch(function (err) {",
+  "      let detail = (err && err.message) || String(err)",
+  "      if (err && err.name === 'TimeoutError') detail = 'timeout after ' + ((req && req.timeoutMs) || 60000) + 'ms'",
+  "      if (err && err.cause && err.cause.message) detail = detail + ' (' + err.cause.message + ')'",
+  "      process.stdout.write(JSON.stringify({ ok: false, status: 0, text: detail }), function () { process.exit(0) })",
+  "    })",
+  "  } catch (err) {",
+  "    process.stdout.write(JSON.stringify({ ok: false, status: 0, text: 'helper error: ' + ((err && err.message) || String(err)) }), function () { process.exit(0) })",
+  "  }",
+  "})",
+].join('\n')
 
 export function apply(ctx) {
   const READER = 'https://r.jina.ai/'
@@ -48,41 +98,14 @@ export function apply(ctx) {
   const CRED_REF = 'JINA_API_KEY'
   const MAX_OUT = 1500000
 
-  const HTTP_SCRIPT = [
-    "const fs = require('fs')",
-    "let input = ''",
-    "process.stdin.setEncoding('utf8')",
-    "process.stdin.on('data', function (c) { input += c })",
-    "process.stdin.on('end', function () {",
-    "  let req = {}",
-    "  try { req = JSON.parse(input || '{}') } catch (e) {",
-    "    process.stdout.write(JSON.stringify({ ok: false, status: 0, text: 'bad request json: ' + e.message }), function () { process.exit(0) })",
-    "    return",
-    "  }",
-    "  setTimeout(function () { process.exit(1) }, ((req && req.timeoutMs) || 60000) + 20000).unref()",
-    "  try {",
-    "    const options = { method: req.method || 'POST', headers: req.headers || {}, redirect: 'follow', signal: AbortSignal.timeout(req.timeoutMs || 60000) }",
-    "    if (req.body !== undefined && req.body !== null) options.body = req.body",
-    "    fetch(req.url, options).then(async function (res) {",
-    "      const text = await res.text()",
-    "      process.stdout.write(JSON.stringify({ ok: res.status >= 200 && res.status < 300, status: res.status, text: text }), function () { process.exit(0) })",
-    "    }).catch(function (err) {",
-    "      let detail = (err && err.message) || String(err)",
-    "      if (err && err.name === 'TimeoutError') detail = 'timeout after ' + ((req && req.timeoutMs) || 60000) + 'ms'",
-    "      if (err && err.cause && err.cause.message) detail = detail + ' (' + err.cause.message + ')'",
-    "      process.stdout.write(JSON.stringify({ ok: false, status: 0, text: detail }), function () { process.exit(0) })",
-    "    })",
-    "  } catch (err) {",
-    "    process.stdout.write(JSON.stringify({ ok: false, status: 0, text: 'helper error: ' + ((err && err.message) || String(err)) }), function () { process.exit(0) })",
-    "  }",
-    "})",
-  ].join('\n')
-
   let nodePath
   let fileKeyCache = { text: undefined, at: 0 }
   let keyDiag = ''
   let keyKind
   let proxyCache = { text: undefined, at: 0, done: false }
+  /** Owner scope of the `jina-tools` settings namespace; undefined without a provider. */
+  let settingsScope
+  let settingsDiag = ''
   let currentCwd = undefined
 
   /** dsh home directory: $DSH_HOME, else ~/.dsh. */
@@ -253,17 +276,75 @@ export function apply(ctx) {
     return proxy
   }
 
+  /**
+   * The manual proxy address stored by the settings card, re-read per operation
+   * (same contract as the API key: a saved change reaches the next call without
+   * a restart). '' while unconfigured or while no settings provider is mounted.
+   */
+  function settingProxy() {
+    if (settingsScope === undefined) return ''
+    try { return proxySettingOf(settingsScope.get()) } catch (err) { return '' }
+  }
+
+  /**
+   * Resolve the transport plan for one operation (proxy.js owns the
+   * precedence: request > setting > JINA_PROXY_URL > WinINET > inherited env).
+   * WinINET is only consulted when no explicit address exists, so a configured
+   * local proxy never pays for a `reg.exe` probe.
+   * @returns `{ url, source, envHint, rejected }`.
+   */
+  async function proxyPlan(request) {
+    const env = process.env || {}
+    const own = () => ({
+      request: request === undefined || request === null || request === '' ? undefined : String(request),
+      setting: settingProxy(),
+      envVar: env[PROXY_ENV_VAR],
+      env,
+    })
+    const explicit = selectProxy(own())
+    if (explicit.url !== undefined) return explicit
+    const system = await discoverProxy()
+    return selectProxy({ ...own(), system })
+  }
+
+  /** Attach the plan actually used to a helper result, for diagnostics. */
+  function withProxy(parsed, plan) {
+    return {
+      ...parsed,
+      proxy: {
+        url: plan.url === undefined ? null : plan.url,
+        source: plan.source,
+        rejected: plan.rejected.map((r) => ({ field: r.field, value: r.value, reason: r.reason })),
+      },
+    }
+  }
+
+  /** What the transport actually ran through. */
+  function effectiveProxyHint(proxy) {
+    if (proxy.source === 'setting') return '当前使用设置卡片（Jina Tools → 本地代理地址）里配置的代理 ' + proxy.url + '；请确认该本地代理正在运行、地址与端口正确（不需要时可在卡片中「清除」以回到自动检测）。'
+    if (proxy.source === 'envVar') return '当前使用环境变量 ' + PROXY_ENV_VAR + '=' + proxy.url + '。'
+    if (proxy.source === 'system') return '当前使用从 Windows 系统代理自动发现的 ' + proxy.url + '。'
+    if (proxy.source === 'request') return '当前使用调用级指定的代理 ' + proxy.url + '。'
+    if (proxy.source === 'environment') return '当前继承启动环境里的代理设置（HTTP_PROXY/HTTPS_PROXY）。'
+    return '未检测到可用代理：Windows 系统代理未开启、启动环境没有 HTTP_PROXY/HTTPS_PROXY、设置卡片也没有填写本地代理地址。若你使用只监听本地端口的代理软件（如 Clash/v2ray），请在设置卡片的「本地代理地址」里填写它的地址（例如 http://127.0.0.1:7897）。'
+  }
+
+  /** Plain-language account of the proxy a request ran through. */
+  function proxyHint(proxy) {
+    if (!proxy) return ''
+    const rejected = Array.isArray(proxy.rejected) ? proxy.rejected[0] : undefined
+    if (rejected === undefined) return effectiveProxyHint(proxy)
+    const where = rejected.field === 'envVar'
+      ? '环境变量 ' + PROXY_ENV_VAR + ' 配置的代理'
+      : rejected.field === 'request' ? '调用级指定的代理' : '设置卡片里配置的代理'
+    return where + '「' + rejected.value + '」不可用（' + describeRejectReason(rejected.reason) + '），已回退到自动检测。' + effectiveProxyHint(proxy)
+  }
+
   /** One HTTP call through the node helper. */
   async function jinaRequest(spec) {
     const node = await resolveNode()
     if (!node) return { ok: false, status: 0, text: 'node executable not found on PATH; the helper needs Node.js to make the HTTP call' }
-    let proxy
-    if (spec.proxy !== undefined && spec.proxy !== null && spec.proxy !== '') {
-      proxy = String(spec.proxy)
-      if (!/^https?:\/\//i.test(proxy)) proxy = 'http://' + proxy
-    } else {
-      proxy = await discoverProxy()
-    }
+    const plan = await proxyPlan(spec.proxy)
     const payload = JSON.stringify({
       url: spec.url,
       method: spec.method || 'POST',
@@ -276,7 +357,7 @@ export function apply(ctx) {
       // base that already carries the harness-resolved proxy policy
       // (HTTP_PROXY/HTTPS_PROXY/ALL_PROXY/NO_PROXY from the startup
       // environment + NODE_USE_ENV_PROXY). Returning `undefined` inherits
-      // that base untouched; only a discovered/overridden proxy layers on
+      // that base untouched; only a selected/overridden proxy layers on
       // top — and it never clobbers NO_PROXY (the base merges the user's
       // list with the loopback bypass). WinINET discovery stays as the
       // Windows complement to the env-only policy the harness resolves.
@@ -298,17 +379,21 @@ export function apply(ctx) {
       if (typeof parsed !== 'object' || parsed === null) return { ok: false, status: 0, text: 'bad helper output: ' + String(r.stdout.text).slice(0, 300) }
       return parsed
     }
-    let r = await runCollect([node, '-e', HTTP_SCRIPT], payload, MAX_OUT, makeEnv(proxy), spec.signal)
-    let parsed = parse(r)
+    let r = await runCollect([node, '-e', HTTP_HELPER_SCRIPT], payload, MAX_OUT, makeEnv(plan.url), spec.signal)
+    let parsed = withProxy(parse(r), plan)
     if (parsed.ok || parsed.status !== 0) return parsed
-    // Transport-level failure: rediscover the proxy (the VPN may have restarted on a new port) and retry once.
-    if (spec.proxy === undefined || spec.proxy === null || spec.proxy === '') {
+    // Transport-level failure: retry once. An automatically discovered proxy is
+    // rediscovered first (the VPN may have restarted on a new port); a manually
+    // configured address is honored as-is — it is the user's explicit choice and
+    // second-guessing it would hide the very misconfiguration they must fix.
+    const explicit = plan.source === 'setting' || plan.source === 'envVar' || plan.source === 'request'
+    let retryPlan = plan
+    if (!explicit) {
       proxyCache = { text: undefined, at: 0, done: false }
-      const proxy2 = await discoverProxy()
-      r = await runCollect([node, '-e', HTTP_SCRIPT], payload, MAX_OUT, makeEnv(proxy2), spec.signal)
-      parsed = parse(r)
+      retryPlan = await proxyPlan(spec.proxy)
     }
-    return parsed
+    r = await runCollect([node, '-e', HTTP_HELPER_SCRIPT], payload, MAX_OUT, makeEnv(retryPlan.url), spec.signal)
+    return withProxy(parse(r), retryPlan)
   }
 
   /** Full call: key handling + auth header + 401 key refresh. */
@@ -345,6 +430,12 @@ export function apply(ctx) {
       429: 'Rate limit hit. Wait a few seconds and retry, or add an API key for higher limits.',
     }
     let msg = 'Jina API error (HTTP ' + status + '). ' + (hints[status] || '')
+    // A transport failure is where a wrong proxy address shows up: name the
+    // proxy that was actually in play instead of a generic network outage.
+    if (status === 0) {
+      const hint = proxyHint(res.proxy)
+      if (hint !== '') msg += ' ' + hint
+    }
     if (status >= 500) msg = 'Jina API server error (HTTP ' + status + '). Retry in a moment; status: https://status.jina.ai'
     if (body) msg += '\nServer said: ' + body
     return msg
@@ -870,9 +961,9 @@ export function apply(ctx) {
 
   // ---- web settings health-check endpoint -----------------------------------
   // The Jina Tools card asks this route for the key's identity + balance
-  // (jina-cli `primer`). Registered when the deployment composes a web server
-  // (the web profile); profiles without one simply never get the route.
-  // The API key itself never leaves the host.
+  // (jina-cli `primer`) and for the proxy actually in effect. Registered when
+  // the deployment composes a web server (the web profile); profiles without
+  // one simply never get the route. The API key itself never leaves the host.
   ctx.inject(['webServer'], (rpcCtx) => {
     rpcCtx.webServer.register({
       kind: 'exact',
@@ -889,6 +980,11 @@ export function apply(ctx) {
           headers: { Accept: 'application/json' },
           body: undefined, timeoutMs: 30000, needsKey: false, apiKey: key,
         })
+        // What the probe ran through, plus what the card has stored, so the
+        // page can show the effective address even when the probe failed.
+        const proxy = out.proxy || null
+        const configured = settingProxy()
+        const extra = { proxy, proxyConfigured: configured, ...(settingsDiag === '' ? {} : { settingsError: settingsDiag }) }
         let payload
         if (out.ok) {
           try {
@@ -901,12 +997,13 @@ export function apply(ctx) {
               balanceLeft: typeof d.balanceLeft === 'number' ? d.balanceLeft : null,
               keyFound: key !== undefined,
               keyKind: keyKind,
+              ...extra,
             }
           } catch (err) {
-            payload = { ok: false, status: out.status, error: 'unexpected primer response shape: ' + String((err && err.message) || err) }
+            payload = { ok: false, status: out.status, error: 'unexpected primer response shape: ' + String((err && err.message) || err), ...extra }
           }
         } else {
-          payload = { ok: false, status: out.status, error: describeJinaError(out) }
+          payload = { ok: false, status: out.status, error: describeJinaError(out), ...extra }
         }
         res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' })
         res.end(JSON.stringify(payload))
@@ -919,18 +1016,18 @@ export function apply(ctx) {
   // edits and renders a card only for namespaces the Host serves. This
   // registration makes the deployment's settings provider serve "jina-tools",
   // pairing it with the "Jina Tools" card the browser half registers under
-  // `key: 'jina-tools'`. The card stores the API key through the credential
-  // seam — never the settings document — so the namespace is intentionally
-  // empty: no fields to render or store, it exists only to be served.
+  // `key: 'jina-tools'`. The namespace carries the manually configured local
+  // proxy address (`proxyUrl`); the API key stays in the credential seam and
+  // never rides the settings document.
   //
   // Zero-dependency note: the settings service consumes a schemastery schema
   // as a function (schema(value) → resolved value), serializes it through
-  // toJSON(), and walks type/dict/meta for secret redaction. A plain object
-  // covering exactly that surface (below) satisfies the runtime contract, so
-  // this plugin still imports nothing from the harness's package graph (an
-  // out-of-tree bundle at this location cannot resolve those imports).
-  // Profiles without a settings provider never mount the inject, and the
-  // plugin keeps working exactly as before — just without a served namespace.
+  // toJSON(), and walks type/dict/meta for secret redaction. The schema built
+  // by proxy.js is a plain object covering exactly that surface, so this plugin
+  // still imports nothing from the harness's package graph (an out-of-tree
+  // bundle at this location cannot resolve those imports). Profiles without a
+  // settings provider never mount the inject, and the plugin keeps working
+  // without the manual override — just with automatic proxy discovery only.
   const settingsNamespace = (value) => {
     if (!/^[a-z][a-z0-9-]*$/.test(String(value))) {
       throw new TypeError('settings namespace "' + String(value) + '" must match ^[a-z][a-z0-9-]*$')
@@ -938,18 +1035,12 @@ export function apply(ctx) {
     return value
   }
 
-  const EMPTY_SETTINGS_SCHEMA = Object.assign(
-    function (value) { return value === undefined || value === null ? {} : value },
-    {
-      type: 'object',
-      dict: {},
-      meta: {},
-      inner: undefined,
-      toJSON() { return { type: 'object' } },
-    },
-  )
-
   ctx.inject(['settings'], (sctx) => {
-    sctx.settings.register(settingsNamespace('jina-tools'), EMPTY_SETTINGS_SCHEMA)
+    try {
+      settingsScope = sctx.settings.register(settingsNamespace(SETTINGS_NAMESPACE), createSettingsSchema())
+    } catch (err) {
+      settingsDiag = String((err && err.message) || err)
+      settingsScope = undefined
+    }
   })
 }
