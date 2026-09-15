@@ -2,6 +2,11 @@
 
 本文件记录 dsh-jina 的完整版本历史；[README.md](./README.md) 的「更新日志」一节只保留最新版本。
 
+### 0.6.1（2026-09-16）
+
+- **fix** 修复 0.6.0 引入的**浏览器半身崩溃 → Jina Tools 卡片整块消失**（用户实测控制台报错：`Error: cannot get property "remote.settings" without inject`，随后 `slot entry crashed in 'settings.plugin.item'`）：gateway 把每个 Remote 命名空间挂成**独立 cordis 服务** `remote.<ns>`，消费方读取该属性前必须在自己的 `inject` 里声明服务名；0.6.0 只声明了 `slots` / `remote` / `remote.credentials`，`settingsApi()` 里一读 `remote.settings` 属性访问本身就抛错，错误冒到 slot 边界，整张卡片被替换为错误边界。修复：`exports.inject` 补 `'remote.settings'`（核对 harness 自带 `ui-settings` 客户端同样声明 `['remote','remote.settings']`），并给该读取加 try/catch 兜底——即使服务缺失也只降级为「未挂载 settings Remote」提示，绝不再让 slot 崩溃。
+- **test** `test/client-bundle.test.js` 增加两条契约防回归：`exports.inject` 必须**精确**列出卡片读取的每个 Remote 命名空间服务；settings 读取必须被 try/catch 包裹。另用真实 cordis 运行时复现/验证该机制（只注入 `remote` 复现原报错，补上 `remote.settings` 后正常解析）。
+
 ### 0.6.0（2026-09-15）
 
 - **feat** 新增**本地代理手动配置**：设置 → 插件 → 配置 → **Jina Tools** 卡片新增「本地代理（可选）」区块，直接填代理地址（如 `http://127.0.0.1:7897`，可省略协议头）→ 保存即生效，一键清除回到自动检测。值写入插件自己的 `jina-tools` 设置命名空间的 `proxyUrl` 字段（由 settings 文档持久化，也可直接编辑 `settings.yaml`），不再只依赖自动发现。这解决的是「代理软件只监听本地端口、没有开启系统代理」的场景：WinINET 的 `ProxyEnable` 为 0，自动检测看不到它，之前的版本会直连失败。

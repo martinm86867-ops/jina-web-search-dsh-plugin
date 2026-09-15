@@ -8,13 +8,12 @@ DeepSeek Harness 的 [Jina AI](https://jina.ai/) 插件（bundle）：把 jina-c
 
 > 此处仅展示最新版本，完整版本历史见 [change-log.md](./change-log.md)。
 
-### 0.6.0（2026-09-15）
+### 0.6.1（2026-09-16）
 
-- **feat** 新增**本地代理手动配置**：卡片新增「本地代理（可选）」输入框，填 `http://127.0.0.1:7897`（可省略协议头）→ 保存即生效，一键清除回到自动检测；值存进插件自己的 `jina-tools` 设置命名空间（`settings.yaml` 可手工编辑）。**代理软件只监听本地端口、未开启系统代理时自动检测看不到它**（WinINET `ProxyEnable=0`），此前只能直连失败。
-- **feat** 代理优先级：设置卡片 > `JINA_PROXY_URL` > Windows 系统代理自动发现 > 启动环境变量；手动配置存在时不再探测注册表，传输失败也不会被自动发现悄悄替换（错误信息点名当前代理）。
-- **feat** 诊断：卡片检测区显示**本次检测实际使用的代理**与来源，并提示已保存但不可用的地址；连接失败的错误信息给出排查方向。
-- **fix** 只把 `http://` / `https://` 代理交给网络 helper（Node fetch 在 `NODE_USE_ENV_PROXY` 下遇到非 http(s) scheme 会直接退出），`socks://` 会被明确拒绝并说明。
-- **test** 新增 proxy 纯函数单测 / mock 宿主集成测试 / 浏览器 bundle 契约测试，共 41 例。
+- **fix** 修复 0.6.0 的浏览器半身崩溃导致 **Jina Tools 卡片整块消失**（实测控制台：`Error: cannot get property "remote.settings" without inject` → `slot entry crashed in 'settings.plugin.item'`）：gateway 把每个 Remote 命名空间挂成独立 cordis 服务 `remote.<ns>`，**读它必须在自己的 `inject` 里声明服务名**；已补 `'remote.settings'`，并给该读取加 try/catch 兜底（服务缺失时只降级提示，不再让 slot 崩溃），新增两条回归测试。
+- **test** 浏览器 bundle 契约测试现在会校验 `exports.inject` 精确列出卡片读取的每个 `remote.<ns>` 服务。
+
+> 0.6.0（2026-09-15）：新增**本地代理**手动配置（卡片输入框 / 代理解析优先级 / 连接诊断），功能与用法见下方「本地代理」章节，完整历史见 [change-log.md](./change-log.md)。
 
 ## 功能
 
@@ -152,7 +151,9 @@ jina-dsh-plugin/
 ## 开发说明
 
 - 主机插件只依赖 Node 内置模块与 dsh 主机服务（`fs`、`subprocess`、`tools`、`credentials`、`settings`、`webServer`），无第三方 npm 依赖；凭据走 dsh 原生的 credential seam（引用 `JINA_API_KEY`），代理配置走插件自己的 `jina-tools` 设置命名空间（`proxyUrl` 字段，schema 是零依赖的 duck-type 节点，见 `proxy.js` 的 `createSettingsSchema`），任何 profile 组合都可以直接使用。
-- 客户端 bundle 直接提交（`ui/client.js`），无构建步骤，git 安装开箱即用。改 UI 后直接改该文件并重启即可。bundle 顶层 `window.__ModuleLoader__.load` 的注册 id **必须等于图行 id（精确包名 `dsh-jina`）**——模块系统只按图行 id 匹配注册（`/client` 后缀除外），注册在别的键上（如旧行名 `dsh-jina/ui`）会报 `loaded without registering "dsh-jina"` 并导致整页 `Failed to load plugins`。卡片注册进 Web 设置包声明的 `settings.plugin.item` 插槽（设置 → 插件 → 配置），这是第三方插件配置的标准位置；key 通过标准的凭据 Remote 命名空间管理：`remote.credentials` 是 gateway `$mount` 时注册的**独立服务**（插件 `inject` 里声明 `'remote.credentials'`，不要从 `remote` 对象上取）——`credentials.describe/set/unset`，变更事件 `credentials/reference-updated` 由 `remote` 服务转发。代理字段走同一 gateway 的 `settings` Remote 命名空间（`remote.settings.describe/mutate`，写入按读到的 `revision` 设栅；外部编辑由转发事件 `settings/document-updated` 触发热重读）。
+- 客户端 bundle 直接提交（`ui/client.js`），无构建步骤，git 安装开箱即用。改 UI 后直接改该文件并重启即可。bundle 顶层 `window.__ModuleLoader__.load` 的注册 id **必须等于图行 id（精确包名 `dsh-jina`）**——模块系统只按图行 id 匹配注册（`/client` 后缀除外），注册在别的键上（如旧行名 `dsh-jina/ui`）会报 `loaded without registering "dsh-jina"` 并导致整页 `Failed to load plugins`。卡片注册进 Web 设置包声明的 `settings.plugin.item` 插槽（设置 → 插件 → 配置），这是第三方插件配置的标准位置。
+- **`remote.<ns>` 的注入铁律**：gateway `$mount` 时会把每个 Remote 命名空间注册成**独立 cordis 服务**，所以客户端插件读取 `remote.<ns>`（如 `remote.credentials`、`remote.settings`）之前，必须在自己的 `inject` 里声明该服务名——只声明 `'remote'` 是不够的，属性访问本身就会抛 `cannot get property "remote.settings" without inject`，而错误冒到 `settings.plugin.item` 的 slot 边界会让**整张卡片消失**（0.6.0 的回归，现已由 `test/client-bundle.test.js` 固化）。本插件的 `inject = ['slots','remote','remote.credentials','remote.settings']`。读取处仍然包一层 try/catch：服务缺失时降级为提示，不让 slot 崩溃。
+- key 通过凭据 Remote 命名空间管理（`credentials.describe/set/unset`，变更事件 `credentials/reference-updated` 由 `remote` 服务转发）；代理字段走 `settings` Remote 命名空间（`remote.settings.describe/mutate`，写入按读到的 `revision` 设栅；外部编辑由转发事件 `settings/document-updated` 触发热重读）。
 - 组合层遵循 dsh 约定：单个双面孔行 `dsh-jina` 同时携带宿主半身与浏览器半身。浏览器半身由**根 manifest** 的 `dsh.client`（platform: web，图边注入 `@deepseek-ai/dsh-api-remotes`）与 `exports["./client"]` 声明，host 的 client-modules 服务扫描时按行名（精确包名）定位根 manifest 并接入 Web boot graph。注意 client-modules 扫描只接受精确包名行：子路径行（如 `dsh-jina/ui`）永远不会被扫描为客户端行——浏览器半身必须声明在根包。
 
 ## 测试

@@ -120,7 +120,16 @@ window.__ModuleLoader__.load({
       var proxyDirty = React.useRef(false)
 
       var settingsApi = function () {
-        return remote && remote.settings ? remote.settings : undefined
+        // `remote.settings` is its own cordis service (the gateway mounts every
+        // Remote namespace as `remote.<ns>`): reading it requires the consumer
+        // to declare that service in `inject`, and a missing declaration throws
+        // from the property access itself. The declaration below is the fix;
+        // this guard keeps a surprise from crashing the whole slot entry.
+        try {
+          return remote && remote.settings ? remote.settings : undefined
+        } catch (err) {
+          return undefined
+        }
       }
 
       var refresh = function () {
@@ -467,7 +476,13 @@ window.__ModuleLoader__.load({
     }
 
     exports.name = 'dsh-jina'
-    exports.inject = ['slots', 'remote', 'remote.credentials']
+    // Every Remote namespace the gateway mounts is its own cordis service, so a
+    // consumer that reads `remote.<ns>` must declare it here — the property
+    // access itself throws `cannot get property "remote.settings" without
+    // inject` otherwise (which crashes the settings slot entry and makes the
+    // card vanish). `remote.credentials` and `remote.settings` are read
+    // through properties below; `remote` itself carries `$on`.
+    exports.inject = ['slots', 'remote', 'remote.credentials', 'remote.settings']
 
     exports.apply = function (ctx) {
       var slots = ctx.get('slots')

@@ -2,6 +2,11 @@
 
 Full version history of dsh-jina; the "Changelog" section of [README.en.md](./README.en.md) keeps only the latest release.
 
+### 0.6.1 (2026-09-16)
+
+- **fix** Fixed the browser-half crash 0.6.0 introduced, which made the whole **Jina Tools card disappear** (reported from a live console: `Error: cannot get property "remote.settings" without inject`, then `slot entry crashed in 'settings.plugin.item'`). The gateway mounts every Remote namespace as its **own cordis service** `remote.<ns>`, and a consumer must declare that service name in its `inject` before reading the property; 0.6.0 declared only `slots` / `remote` / `remote.credentials`, so the moment `settingsApi()` read `remote.settings` the property access itself threw, the error reached the slot boundary, and the card was replaced by an error boundary. Fix: `exports.inject` now declares `'remote.settings'` (the bundled `ui-settings` client declares `['remote','remote.settings']` too), and the read is wrapped in try/catch so a missing service degrades to the "settings Remote not mounted" notice instead of crashing the slot.
+- **test** `test/client-bundle.test.js` gained two regression contracts: `exports.inject` must list **exactly** every Remote namespace service the card reads, and the settings read must sit inside try/catch. The mechanism was reproduced and re-verified against the real cordis runtime (injecting only `remote` reproduces the original error; adding `remote.settings` resolves).
+
 ### 0.6.0 (2026-09-15)
 
 - **feat** **Manual local-proxy configuration**: the Jina Tools card (Settings → Plugins → Configure) gains a "Local proxy (optional)" block — type the address (`http://127.0.0.1:7897`, the scheme may be omitted), save, and the next tool call uses it; one click clears it back to automatic detection. The value is stored in the `proxyUrl` field of the plugin's own `jina-tools` settings namespace (persisted in the settings document, hand-editable via `settings.yaml`). This is the fix for the common setup where the proxy client listens on a loopback port without being the Windows system proxy: WinINET reports `ProxyEnable = 0x0`, automatic discovery cannot see it, and earlier versions went direct and failed.

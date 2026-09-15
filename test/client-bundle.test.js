@@ -44,6 +44,28 @@ test('client bundle: injects the credentials and remote planes it consumes', () 
   assert.match(SOURCE, /exports\.inject\s*=\s*\[[^\]]*'slots'[^\]]*'remote'[^\]]*'remote\.credentials'/)
 })
 
+test('client bundle: declares every Remote namespace service it reads', () => {
+  // Regression: the gateway mounts each Remote namespace as its own cordis
+  // service, so `remote.settings` throws `cannot get property
+  // "remote.settings" without inject` from the property access itself unless
+  // the consumer lists it. 0.6.0 shipped without it and the thrown error
+  // crashed the settings slot entry ("slot entry crashed in
+  // 'settings.plugin.item'"), so the whole card disappeared.
+  const declared = /exports\.inject\s*=\s*\[([^\]]*)\]/.exec(SOURCE)
+  assert.ok(declared, 'exports.inject must be declared')
+  const names = declared[1].split(',').map((part) => part.trim().replace(/^'|'$/g, '')).filter((part) => part !== '')
+  assert.deepEqual(names, ['slots', 'remote', 'remote.credentials', 'remote.settings'])
+  for (const nested of ['remote.credentials', 'remote.settings']) {
+    assert.ok(names.includes(nested), nested + ' must be declared because the card reads it off `remote`')
+  }
+})
+
+test('client bundle: the settings face is read defensively, never crashing a slot', () => {
+  assert.match(SOURCE, /var settingsApi = function \(\) \{/)
+  assert.match(SOURCE, /try \{\s*return remote && remote\.settings/)
+  assert.match(SOURCE, /catch \(err\) \{\s*return undefined\s*\}/)
+})
+
 test('client bundle: the manual proxy rides the settings Remote namespace', () => {
   assert.match(SOURCE, /PROXY_FIELD\s*=\s*'proxyUrl'/)
   assert.match(SOURCE, /remote\.settings/)
