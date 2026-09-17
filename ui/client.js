@@ -124,8 +124,8 @@ window.__ModuleLoader__.load({
         withShadowDom: true,
         withIframe: false,
       },
-      'adversarial-stealth': {
-        label: 'Adversarial Stealth (Anti-Bot Armor & Evasion)',
+      'effective-stealth': {
+        label: 'Effective Stealth (Resilience & Anti-Bot Defense)',
         preset: 'agent',
         searchNum: '5',
         tokenBudget: '12000',
@@ -142,6 +142,8 @@ window.__ModuleLoader__.load({
         withIframe: false,
       },
     }
+    // Backward compatibility alias
+    PRESET_TEMPLATES['adversarial-stealth'] = PRESET_TEMPLATES['effective-stealth']
 
     var PROXY_REJECTS = {
       scheme: 'Only http:// or https:// proxies are supported',

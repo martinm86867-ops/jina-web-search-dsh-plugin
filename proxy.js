@@ -148,8 +148,8 @@ export const EXTRACTION_PRESETS = {
     defaultWithShadowDom: true,
     defaultWithIframe: false,
   },
-  'adversarial-stealth': {
-    label: 'Adversarial Stealth (Anti-Bot Armor & Evasion)',
+  'effective-stealth': {
+    label: 'Effective Stealth (Resilience & Anti-Bot Defense)',
     description: 'Enforces Cloudflare browser rendering, modal stripping, honeypot detachment, and shadow DOM traversal.',
     preset: 'agent',
     defaultSearchNum: 5,
@@ -167,6 +167,8 @@ export const EXTRACTION_PRESETS = {
     defaultWithIframe: false,
   },
 }
+// Backward compatibility alias
+EXTRACTION_PRESETS['adversarial-stealth'] = EXTRACTION_PRESETS['effective-stealth']
 
 
 export const SETTINGS_FIELDS = {

@@ -13,7 +13,7 @@ import {
   DEFAULT_WITH_IFRAME_FIELD,
 } from '../proxy.js'
 
-test('proxy.js exports adversarial fields and constants', () => {
+test('proxy.js exports effective extraction fields and constants', () => {
   assert.equal(DEFAULT_REMOVE_OVERLAY_FIELD, 'defaultRemoveOverlay')
   assert.equal(DEFAULT_DETACH_INVISIBLES_FIELD, 'defaultDetachInvisibles')
   assert.equal(DEFAULT_WITH_SHADOW_DOM_FIELD, 'defaultWithShadowDom')
@@ -37,9 +37,9 @@ test('DEFAULT_REMOVE_SELECTORS includes enterprise CMPs, paywalls, and ad contai
   assert.ok(DEFAULT_REMOVE_SELECTORS.includes('google_ads'))
 })
 
-test('EXTRACTION_PRESETS contains adversarial-stealth and hardened preset configurations', () => {
-  const stealth = EXTRACTION_PRESETS['adversarial-stealth']
-  assert.ok(stealth, 'adversarial-stealth preset must exist')
+test('EXTRACTION_PRESETS contains effective-stealth and hardened preset configurations', () => {
+  const stealth = EXTRACTION_PRESETS['effective-stealth']
+  assert.ok(stealth, 'effective-stealth preset must exist')
   assert.equal(stealth.defaultEngine, 'cf-browser-rendering')
   assert.equal(stealth.autoBypassCloudflare, true)
   assert.equal(stealth.defaultRemoveOverlay, true)
@@ -47,11 +47,14 @@ test('EXTRACTION_PRESETS contains adversarial-stealth and hardened preset config
   assert.equal(stealth.defaultWithShadowDom, true)
   assert.equal(stealth.defaultWithIframe, false)
 
+  // Verify backward-compatibility alias
+  assert.equal(EXTRACTION_PRESETS['adversarial-stealth'], stealth)
+
   assert.equal(EXTRACTION_PRESETS.balanced.defaultRemoveOverlay, true)
   assert.equal(EXTRACTION_PRESETS.balanced.defaultDetachInvisibles, true)
 })
 
-test('toolSettingsOf extracts and defaults adversarial configuration', () => {
+test('toolSettingsOf extracts and defaults effective extraction configuration', () => {
   const defaults = toolSettingsOf({})
   assert.equal(defaults.defaultRemoveOverlay, true)
   assert.equal(defaults.defaultDetachInvisibles, true)
@@ -70,7 +73,7 @@ test('toolSettingsOf extracts and defaults adversarial configuration', () => {
   assert.equal(custom.defaultWithIframe, true)
 })
 
-test('createSettingsSchema round-trips adversarial options', () => {
+test('createSettingsSchema round-trips effective options', () => {
   const schema = createSettingsSchema()
   const val = schema({
     defaultRemoveOverlay: true,
@@ -84,7 +87,7 @@ test('createSettingsSchema round-trips adversarial options', () => {
   assert.equal(val.defaultWithIframe, true)
 })
 
-test('index.js registers adversarial parameters across tools', () => {
+test('index.js registers effective extraction parameters across tools', () => {
   const indexSource = readFileSync(new URL('../index.js', import.meta.url), 'utf8')
 
   // jina_read checks
