@@ -2,6 +2,18 @@
 
 本文件记录 dsh-jina 的完整版本历史；[README.md](./README.md) 的「更新日志」一节只保留最新版本。
 
+### 1.0.0（2026-09-17）
+
+- **feat** **全套 16 款智能工具全面覆盖**：涵盖通用网页搜索、并行批量搜索（`jina_search_batch`）、ReaderLM-v2 结构化 JSON 抽取（`jina_extract`）、语义 Markdown 分块（`jina_chunk`）、本地离线文档解析（`jina_read_file`）、实时网页事实核验（`jina_fact_check`）、密集向量嵌入（`jina_embed`）、相关度重排（`jina_rerank`）、零样本分类（`jina_classify`）及 PDF 图表公式 OCR 提取（`jina_pdf`）。
+- **feat** **对抗性内容提取与反爬穿透**：
+  - 原生支持 `removeOverlay`（`X-Remove-Overlay`）：服务端剥离全屏弹窗、GDPR/CMP Cookie 墙与软付费墙遮罩。
+  - 原生支持 `detachInvisibles`（`X-Detach-Invisibles`）：清理 0 像素爬虫蜜罐与隐藏追踪埋点。
+  - 原生支持 `withShadowDom` 与 `withIframe`：穿透 Web Components 影子 DOM 与内联 iframe 文档。
+  - 全局 Cloudflare Turnstile 自动穿透（`callJinaWithCfBypass`）：遇到 403/503 或验证码拦截自动升级为浏览器渲染重试。
+  - `jina_read_file` 本地纯文本、代码与 Markdown 免上传直接解析，无 API key 即可离线读取。
+- **feat** **新增对抗隐身预设与 Web UI 开关**：新增 `adversarial-stealth` 预设，设置面板新增弹窗剥离、蜜罐剔除、Shadow DOM 与 iframe 开关。
+- **test** 新增 `test/adversarial-extraction.test.js`，全面覆盖对抗参数映射、选择器韧性与 Schema 往返序列化。
+
 ### 0.6.1（2026-09-16）
 
 - **fix** 修复 0.6.0 引入的**浏览器半身崩溃 → Jina Tools 卡片整块消失**（用户实测控制台报错：`Error: cannot get property "remote.settings" without inject`，随后 `slot entry crashed in 'settings.plugin.item'`）：gateway 把每个 Remote 命名空间挂成**独立 cordis 服务** `remote.<ns>`，消费方读取该属性前必须在自己的 `inject` 里声明服务名；0.6.0 只声明了 `slots` / `remote` / `remote.credentials`，`settingsApi()` 里一读 `remote.settings` 属性访问本身就抛错，错误冒到 slot 边界，整张卡片被替换为错误边界。修复：`exports.inject` 补 `'remote.settings'`（核对 harness 自带 `ui-settings` 客户端同样声明 `['remote','remote.settings']`），并给该读取加 try/catch 兜底——即使服务缺失也只降级为「未挂载 settings Remote」提示，绝不再让 slot 崩溃。

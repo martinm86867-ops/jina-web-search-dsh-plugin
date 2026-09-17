@@ -420,6 +420,26 @@ export function apply(ctx) {
     return res
   }
 
+  /** Centralized Cloudflare turnstile and bot-challenge bypass auto-retry. */
+  async function callJinaWithCfBypass(opts, toolDefaults) {
+    let res = await callJina(opts)
+    if (!res.ok && toolDefaults && toolDefaults.autoBypassCloudflare && opts.headers && opts.headers['X-Engine'] !== 'cf-browser-rendering') {
+      const text = String(res.text || '')
+      const isCloudflare = res.status === 403 || res.status === 503 || text.includes('Cloudflare') || text.includes('cf-chl') || text.includes('turnstile') || text.includes('Attention Required')
+      if (isCloudflare) {
+        const retryHeaders = Object.assign({}, opts.headers, { 'X-Engine': 'cf-browser-rendering' })
+        const retryRes = await callJina({
+          ...opts,
+          headers: retryHeaders,
+          timeoutMs: Math.max(opts.timeoutMs || 60000, 120000),
+          needsKey: true,
+        })
+        if (retryRes.ok) return retryRes
+      }
+    }
+    return res
+  }
+
   function describeJinaError(res) {
     const status = res.status || 0
     const body = String(res.text || '').slice(0, 800)
@@ -691,10 +711,10 @@ export function apply(ctx) {
           const toolDefaults = getActiveToolSettings()
           const headers = { Accept: 'text/markdown', 'Content-Type': 'application/json' }
           if (toolDefaults.defaultPreset) headers['X-Preset'] = toolDefaults.defaultPreset
-          const fullRes = await callJina({
+          const fullRes = await callJinaWithCfBypass({
             url: READER, method: 'POST', headers,
             body: { url: readUrl }, timeoutMs: 120000, needsKey: false, apiKey: args.apiKey, signal: enterExec(exec),
-          })
+          }, toolDefaults)
           if (fullRes.ok) {
             return `=== Search Results for "${args.query}" ===\n${searchRes}\n\n=== Full Paper Content (arXiv:${arxivId}) ===\n${fullRes.text}`
           }
@@ -726,7 +746,7 @@ export function apply(ctx) {
 
   ctx.tools.register({
     name: 'jina_read',
-    description: 'Read a web page and extract clean markdown via Jina Reader (r.jina.ai), mirroring the jina-cli \'read\' command. Supports CSS target selectors, SPA wait selectors, element removal, token budget caps, and Cloudflare anti-bot bypass. Configurable via DSH settings.',
+    description: 'Read a web page and extract clean markdown via Jina Reader (r.jina.ai), mirroring the jina-cli \'read\' command. Supports CSS target selectors, SPA wait selectors, element removal, modal/paywall overlay stripping, honeypot detachment, shadow DOM traversal, token budget caps, and Cloudflare anti-bot bypass. Configurable via DSH settings.',
     parameters: {
       type: 'object',
       additionalProperties: false,
@@ -738,6 +758,11 @@ export function apply(ctx) {
         tokenBudget: { type: 'number', description: 'Maximum token count for the response. Overrides settings.' },
         engine: { type: 'string', enum: ['auto', 'browser', 'curl', 'cf-browser-rendering'], description: 'Extraction engine: cf-browser-rendering bypasses Cloudflare turnstile. Overrides settings.' },
         noCache: { type: 'boolean', description: 'Bypass Jina cache and force fresh crawl. Overrides settings.' },
+        removeOverlay: { type: 'boolean', description: 'Remove modal overlays, popups, cookie consent walls, and paywall backdrops. Overrides settings.' },
+        detachInvisibles: { type: 'boolean', description: 'Detach invisible DOM elements, honeypots, and hidden tracking text. Overrides settings.' },
+        withShadowDom: { type: 'boolean', description: 'Traverse and extract content from Shadow DOM trees (web components). Overrides settings.' },
+        withIframe: { type: 'boolean', description: 'Extract and inline embedded iframe documents. Overrides settings.' },
+        cookies: { type: 'string', description: 'Custom cookie string for authenticated sessions or paywall bypass (e.g. "session_token=xyz; consent=true").' },
         withGeneratedAlt: { type: 'boolean', description: 'Generate AI alt-text for images lacking captions.' },
         links: { type: 'boolean', description: 'Include hyperlinks in the output.' },
         images: { type: 'boolean', description: 'Include image summaries in the output.' },
@@ -772,6 +797,20 @@ export function apply(ctx) {
       const removeSel = args.removeSelector || toolDefaults.defaultRemoveSelector
       if (removeSel) headers['X-Remove-Selector'] = removeSel
 
+      const removeOverlay = args.removeOverlay !== undefined ? args.removeOverlay : toolDefaults.defaultRemoveOverlay
+      if (removeOverlay !== false) headers['X-Remove-Overlay'] = 'true'
+
+      const detachInvisibles = args.detachInvisibles !== undefined ? args.detachInvisibles : toolDefaults.defaultDetachInvisibles
+      if (detachInvisibles !== false) headers['X-Detach-Invisibles'] = 'true'
+
+      const shadowDom = args.withShadowDom !== undefined ? args.withShadowDom : toolDefaults.defaultWithShadowDom
+      if (shadowDom) headers['X-With-Shadow-Dom'] = 'true'
+
+      const iframe = args.withIframe !== undefined ? args.withIframe : toolDefaults.defaultWithIframe
+      if (iframe) headers['X-With-Iframe'] = 'true'
+
+      if (args.cookies) headers['X-Set-Cookie'] = String(args.cookies)
+
       const tokenBudget = args.tokenBudget || toolDefaults.defaultTokenBudget
       if (tokenBudget) headers['X-Token-Budget'] = String(tokenBudget)
 
@@ -783,25 +822,10 @@ export function apply(ctx) {
 
       if (toolDefaults.defaultPreset) headers['X-Preset'] = toolDefaults.defaultPreset
 
-      let res = await callJina({
+      const res = await callJinaWithCfBypass({
         url: READER, method: 'POST', headers,
         body: { url: String(args.url) }, timeoutMs: 120000, needsKey: false, apiKey: args.apiKey, signal,
-      })
-
-      // Cloudflare Auto-Bypass Automation:
-      // If request blocked by Cloudflare (403, 503, or CF challenge signature) and cf-browser-rendering wasn't already used
-      if (!res.ok && toolDefaults.autoBypassCloudflare && headers['X-Engine'] !== 'cf-browser-rendering') {
-        const text = String(res.text || '')
-        const isCloudflare = res.status === 403 || res.status === 503 || text.includes('Cloudflare') || text.includes('cf-chl') || text.includes('turnstile') || text.includes('Attention Required')
-        if (isCloudflare) {
-          const retryHeaders = Object.assign({}, headers, { 'X-Engine': 'cf-browser-rendering' })
-          const retryRes = await callJina({
-            url: READER, method: 'POST', headers: retryHeaders,
-            body: { url: String(args.url) }, timeoutMs: 120000, needsKey: true, apiKey: args.apiKey, signal,
-          })
-          if (retryRes.ok) return retryRes.text
-        }
-      }
+      }, toolDefaults)
 
       if (!res.ok) return describeJinaError(res)
       return res.text
@@ -820,6 +844,14 @@ export function apply(ctx) {
         schema: { type: 'object', description: 'Target JSON Schema describing the desired output format.' },
         targetSelector: { type: 'string', description: 'Optional CSS selector to scope extraction (e.g. article, .main).' },
         waitForSelector: { type: 'string', description: 'Optional CSS selector to wait for before extraction.' },
+        removeSelector: { type: 'string', description: 'CSS selector(s) to exclude from extraction.' },
+        removeOverlay: { type: 'boolean', description: 'Remove modal overlays and paywall backdrops before extraction.' },
+        detachInvisibles: { type: 'boolean', description: 'Detach invisible elements and honeypots before extraction.' },
+        withShadowDom: { type: 'boolean', description: 'Traverse and extract content from Shadow DOM trees.' },
+        withIframe: { type: 'boolean', description: 'Extract and inline embedded iframe documents.' },
+        engine: { type: 'string', enum: ['auto', 'browser', 'curl', 'cf-browser-rendering'], description: 'Extraction engine: cf-browser-rendering bypasses Cloudflare turnstile.' },
+        tokenBudget: { type: 'number', description: 'Maximum token count budget.' },
+        cookies: { type: 'string', description: 'Custom cookie string for authenticated sessions.' },
         apiKey: { type: 'string', description: 'Optional Jina API key override.' },
       },
       required: ['url', 'instruction', 'schema'],
@@ -837,18 +869,38 @@ export function apply(ctx) {
       if (targetSel) headers['X-Target-Selector'] = targetSel
       const waitSel = args.waitForSelector || toolDefaults.defaultWaitForSelector
       if (waitSel) headers['X-Wait-For-Selector'] = waitSel
-      const engine = toolDefaults.defaultEngine
+      const removeSel = args.removeSelector || toolDefaults.defaultRemoveSelector
+      if (removeSel) headers['X-Remove-Selector'] = removeSel
+
+      const removeOverlay = args.removeOverlay !== undefined ? args.removeOverlay : toolDefaults.defaultRemoveOverlay
+      if (removeOverlay !== false) headers['X-Remove-Overlay'] = 'true'
+
+      const detachInvisibles = args.detachInvisibles !== undefined ? args.detachInvisibles : toolDefaults.defaultDetachInvisibles
+      if (detachInvisibles !== false) headers['X-Detach-Invisibles'] = 'true'
+
+      const shadowDom = args.withShadowDom !== undefined ? args.withShadowDom : toolDefaults.defaultWithShadowDom
+      if (shadowDom) headers['X-With-Shadow-Dom'] = 'true'
+
+      const iframe = args.withIframe !== undefined ? args.withIframe : toolDefaults.defaultWithIframe
+      if (iframe) headers['X-With-Iframe'] = 'true'
+
+      const tokenBudget = args.tokenBudget || toolDefaults.defaultTokenBudget
+      if (tokenBudget) headers['X-Token-Budget'] = String(tokenBudget)
+
+      const engine = args.engine || toolDefaults.defaultEngine
       if (engine) headers['X-Engine'] = engine
+
+      if (args.cookies) headers['X-Set-Cookie'] = String(args.cookies)
 
       const body = {
         url: String(args.url),
         instruction: String(args.instruction),
         jsonSchema: args.schema,
       }
-      const res = await callJina({
+      const res = await callJinaWithCfBypass({
         url: READER, method: 'POST', headers,
         body, timeoutMs: 120000, needsKey: true, apiKey: args.apiKey, signal,
-      })
+      }, toolDefaults)
       if (!res.ok) return describeJinaError(res)
       return res.text
     },
@@ -864,6 +916,9 @@ export function apply(ctx) {
         url: { type: 'string', description: 'Page URL, starting with http:// or https://.' },
         chunkBy: { type: 'string', enum: ['h1', 'h2', 'h3', 'h4', 'h5', 'structured'], description: 'Semantic chunk boundary. Default: h2.' },
         targetSelector: { type: 'string', description: 'Target CSS selector to extract before chunking.' },
+        removeSelector: { type: 'string', description: 'CSS selector(s) to exclude before chunking.' },
+        removeOverlay: { type: 'boolean', description: 'Remove modal overlays and paywall backdrops before chunking.' },
+        detachInvisibles: { type: 'boolean', description: 'Detach invisible elements and honeypots before chunking.' },
         tokenBudget: { type: 'number', description: 'Max token budget for the entire document.' },
         apiKey: { type: 'string', description: 'Optional Jina API key override.' },
       },
@@ -881,30 +936,25 @@ export function apply(ctx) {
       }
       const targetSel = args.targetSelector || toolDefaults.defaultTargetSelector
       if (targetSel) headers['X-Target-Selector'] = targetSel
+
+      const removeSel = args.removeSelector || toolDefaults.defaultRemoveSelector
+      if (removeSel) headers['X-Remove-Selector'] = removeSel
+
+      const removeOverlay = args.removeOverlay !== undefined ? args.removeOverlay : toolDefaults.defaultRemoveOverlay
+      if (removeOverlay !== false) headers['X-Remove-Overlay'] = 'true'
+
+      const detachInvisibles = args.detachInvisibles !== undefined ? args.detachInvisibles : toolDefaults.defaultDetachInvisibles
+      if (detachInvisibles !== false) headers['X-Detach-Invisibles'] = 'true'
+
       const tokenBudget = args.tokenBudget || toolDefaults.defaultTokenBudget
       if (tokenBudget) headers['X-Token-Budget'] = String(tokenBudget)
 
       if (toolDefaults.defaultPreset) headers['X-Preset'] = toolDefaults.defaultPreset
 
-      let res = await callJina({
+      const res = await callJinaWithCfBypass({
         url: READER, method: 'POST', headers,
         body: { url: String(args.url) }, timeoutMs: 120000, needsKey: false, apiKey: args.apiKey, signal,
-      })
-
-      // Cloudflare Auto-Bypass Automation:
-      // If request blocked by Cloudflare (403, 503, or CF challenge signature) and cf-browser-rendering wasn't already used
-      if (!res.ok && toolDefaults.autoBypassCloudflare && headers['X-Engine'] !== 'cf-browser-rendering') {
-        const text = String(res.text || '')
-        const isCloudflare = res.status === 403 || res.status === 503 || text.includes('Cloudflare') || text.includes('cf-chl') || text.includes('turnstile') || text.includes('Attention Required')
-        if (isCloudflare) {
-          const retryHeaders = Object.assign({}, headers, { 'X-Engine': 'cf-browser-rendering' })
-          const retryRes = await callJina({
-            url: READER, method: 'POST', headers: retryHeaders,
-            body: { url: String(args.url) }, timeoutMs: 120000, needsKey: true, apiKey: args.apiKey, signal,
-          })
-          if (retryRes.ok) return retryRes.text
-        }
-      }
+      }, toolDefaults)
 
       if (!res.ok) return describeJinaError(res)
       return res.text
@@ -943,12 +993,14 @@ export function apply(ctx) {
 
   ctx.tools.register({
     name: 'jina_screenshot',
-    description: 'Capture a screenshot of a web page via Jina (r.jina.ai), mirroring the jina-cli \'screenshot\' command. Automatically saves captured images into DSH attachments store when available for multimodal models.',
+    description: 'Capture a screenshot of a web page via Jina (r.jina.ai), mirroring the jina-cli \'screenshot\' command. Automatically saves captured images into DSH attachments store when available for multimodal models. Supports target CSS selectors and SPA wait selectors.',
     parameters: {
       type: 'object',
       additionalProperties: false,
       properties: {
         url: { type: 'string', description: 'Page URL, starting with http:// or https://.' },
+        targetSelector: { type: 'string', description: 'Target CSS selector to capture specifically (overrides settings).' },
+        waitForSelector: { type: 'string', description: 'Wait until this CSS selector mounts before capturing (overrides settings).' },
         fullPage: { type: 'boolean', description: 'Capture the full page instead of the viewport.' },
         apiKey: { type: 'string', description: 'Optional Jina API key override.' },
       },
@@ -958,11 +1010,23 @@ export function apply(ctx) {
     async execute(args, exec) {
       const signal = enterExec(exec)
       if (!/^https?:\/\//i.test(String(args.url))) return 'invalid url: ' + args.url + ' (must start with http:// or https://)'
-      const res = await callJina({
+      const toolDefaults = getActiveToolSettings()
+      const headers = {
+        Accept: 'application/json',
+        'Content-Type': 'application/json',
+        'X-Return-Format': args.fullPage ? 'pageshot' : 'screenshot',
+      }
+      const targetSel = args.targetSelector || toolDefaults.defaultTargetSelector
+      if (targetSel) headers['X-Target-Selector'] = targetSel
+      const waitSel = args.waitForSelector || toolDefaults.defaultWaitForSelector
+      if (waitSel) headers['X-Wait-For-Selector'] = waitSel
+      if (toolDefaults.defaultRemoveOverlay) headers['X-Remove-Overlay'] = 'true'
+
+      const res = await callJinaWithCfBypass({
         url: READER, method: 'POST',
-        headers: { Accept: 'application/json', 'Content-Type': 'application/json', 'X-Return-Format': args.fullPage ? 'pageshot' : 'screenshot' },
+        headers,
         body: { url: String(args.url) }, timeoutMs: 120000, needsKey: true, apiKey: args.apiKey, signal,
-      })
+      }, toolDefaults)
       if (!res.ok) return describeJinaError(res)
       let out = fmtScreenshot(res.text)
 
@@ -1148,6 +1212,7 @@ export function apply(ctx) {
         preset: { type: 'string', enum: ['ocr', 'ocr+', 'ocr++', 'pdf', 'pdf+', 'pdf++'], description: 'OCR preset tuning. ocr++ handles scanned documents with high accuracy.' },
         inlineFormula: { type: 'boolean', description: 'Convert inline math notation to standard LaTeX blocks.' },
         table: { type: 'boolean', description: 'Format grid tabular content as markdown tables. Default: true.' },
+        page: { type: 'number', description: 'Steer which page to return for document files (1-indexed).' },
         maxEdge: { type: 'number', description: 'Max pixel size for extracted images. Default: 1024.' },
         json: { type: 'boolean', description: 'Return the raw JSON response instead of formatted output.' },
         apiKey: { type: 'string', description: 'Optional Jina API key override.' },
@@ -1161,11 +1226,13 @@ export function apply(ctx) {
       else if (args.url) body.url = String(args.url)
       else return 'provide either url or arxivId (jina pdf URL_OR_ARXIV_ID)'
       if (args.extractType) body.type = args.extractType
+      if (args.page !== undefined) body.page = args.page
 
       const headers = { 'Content-Type': 'application/json' }
       if (args.preset) headers['X-Preset'] = args.preset
       if (args.inlineFormula !== undefined) headers['X-Inline-Formula'] = String(args.inlineFormula)
       if (args.table !== undefined) headers['X-Table'] = String(args.table)
+      if (args.page !== undefined) headers['X-Page'] = String(args.page)
 
       const res = await callJina({
         url: SEARCH + 'extract-pdf', method: 'POST',
@@ -1179,12 +1246,13 @@ export function apply(ctx) {
 
   ctx.tools.register({
     name: 'jina_read_file',
-    description: 'Read and extract markdown with OCR from a local workspace file (PDF, HTML, text, or image) via Jina Reader. Enables high-accuracy document and equation extraction on local repository files without public hosting.',
+    description: 'Read and extract markdown with OCR from a local workspace file (PDF, HTML, text, code, or image) via Jina Reader. Supports offline direct reading for plaintext/code files and Jina OCR for PDFs and complex documents.',
     parameters: {
       type: 'object',
       additionalProperties: false,
       properties: {
         filePath: { type: 'string', description: 'Path to local file relative to workspace or absolute path.' },
+        localOnly: { type: 'boolean', description: 'Read local text/code/markdown directly without uploading to Jina OCR API.' },
         targetSelector: { type: 'string', description: 'Target CSS selector to extract (for HTML files).' },
         tokenBudget: { type: 'number', description: 'Maximum tokens to return.' },
         apiKey: { type: 'string', description: 'Optional Jina API key override.' },
@@ -1207,8 +1275,19 @@ export function apply(ctx) {
         return 'failed to read local file "' + pathStr + '": ' + (err.message || String(err))
       }
 
-      const b64 = Buffer.isBuffer(buffer) ? buffer.toString('base64') : Buffer.from(buffer).toString('base64')
       const ext = pathStr.split('.').pop().toLowerCase()
+      const textLikeExts = new Set(['md', 'txt', 'json', 'csv', 'log', 'yaml', 'yml', 'xml', 'js', 'ts', 'jsx', 'tsx', 'py', 'c', 'cpp', 'rs', 'go', 'toml', 'sh', 'css', 'sql'])
+
+      // Check if caller requested local-only read, or if text-like and no target selector or API key override specified
+      if (args.localOnly || (textLikeExts.has(ext) && !args.targetSelector && !args.apiKey && !(await loadKey()))) {
+        const textContent = Buffer.isBuffer(buffer) ? buffer.toString('utf8') : Buffer.from(buffer).toString('utf8')
+        if (args.tokenBudget && textContent.length > args.tokenBudget * 4) {
+          return textContent.slice(0, args.tokenBudget * 4) + '\n\n[... truncated by tokenBudget cap ...]'
+        }
+        return textContent
+      }
+
+      const b64 = Buffer.isBuffer(buffer) ? buffer.toString('base64') : Buffer.from(buffer).toString('base64')
       const toolDefaults = getActiveToolSettings()
 
       const headers = {
@@ -1219,6 +1298,7 @@ export function apply(ctx) {
       if (args.targetSelector) headers['X-Target-Selector'] = args.targetSelector
       const tokenBudget = args.tokenBudget || toolDefaults.defaultTokenBudget
       if (tokenBudget) headers['X-Token-Budget'] = String(tokenBudget)
+      if (toolDefaults.defaultRemoveOverlay) headers['X-Remove-Overlay'] = 'true'
 
       const body = {
         file: b64,
@@ -1227,10 +1307,10 @@ export function apply(ctx) {
       }
       if (ext === 'pdf') body.pdf = b64
 
-      const res = await callJina({
+      const res = await callJinaWithCfBypass({
         url: READER, method: 'POST', headers,
         body, timeoutMs: 120000, needsKey: true, apiKey: args.apiKey, signal,
-      })
+      }, toolDefaults)
       if (!res.ok) return describeJinaError(res)
       return res.text
     },

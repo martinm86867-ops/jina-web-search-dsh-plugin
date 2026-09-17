@@ -21,6 +21,14 @@ test('client bundle: card is keyed by the settings namespace the host serves', (
   assert.match(SOURCE, /NS\s*=\s*'jina-tools'/)
 })
 
+test('client bundle: registers plugins.bundle.config and plugins.row.config for dsh >= 0.1.6', () => {
+  assert.match(SOURCE, /name:\s*'plugins\.bundle\.config'/)
+  assert.match(SOURCE, /key:\s*'dsh-jina'/)
+  assert.match(SOURCE, /name:\s*'plugins\.row\.config'/)
+  assert.match(SOURCE, /key:\s*'dsh-jina#jina-tools'/)
+  assert.match(SOURCE, /slotProps\.view === 'summary'/)
+})
+
 test('client bundle: injects the slots plane it consumes', () => {
   assert.match(SOURCE, /exports\.inject\s*=\s*\[[^\]]*'slots'/)
 })
@@ -29,7 +37,10 @@ test('client bundle: declares the services it reads', () => {
   const declared = /exports\.inject\s*=\s*\[([^\]]*)\]/.exec(SOURCE)
   assert.ok(declared, 'exports.inject must be declared')
   const names = declared[1].split(',').map((part) => part.trim().replace(/^'|'$/g, '')).filter((part) => part !== '')
-  assert.deepEqual(names, ['slots', 'connection', 'remote'])
+  assert.deepEqual(names, ['slots', 'remote', 'remote.credentials', 'remote.settings'])
+  for (const nested of ['remote.credentials', 'remote.settings']) {
+    assert.ok(names.includes(nested), nested + ' must be declared because the card reads it off `remote`')
+  }
 })
 
 test('client bundle: the settings face is read defensively, never crashing a slot', () => {

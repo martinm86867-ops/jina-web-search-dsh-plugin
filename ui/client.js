@@ -34,8 +34,8 @@ window.__ModuleLoader__.load({
       none: 'None (direct connection)',
     }
 
-        var DEFAULT_TARGET_SELECTORS = 'article, main, [role="main"], .markdown-body, .content, #content, .post-content, .article-body, .entry-content'
-    var DEFAULT_REMOVE_SELECTORS = 'header, footer, nav, [role="navigation"], .navbar, .cookie-banner, #cookie-banner, .consent-banner, .banner, .ads, .ad, .sidebar, #sidebar, .aside, .social-share, .comments, #comments'
+    var DEFAULT_TARGET_SELECTORS = 'article, main, [role="main"], [role="article"], .markdown-body, .content, #content, .main-content, #main-content, .post-content, .article-body, .entry-content, [itemprop="articleBody"], [itemprop="text"], [data-testid*="article"], [data-testid*="content"]'
+    var DEFAULT_REMOVE_SELECTORS = 'header, footer, nav, aside, [role="navigation"], [role="banner"], [role="contentinfo"], .navbar, .site-header, .site-footer, .cookie-banner, #cookie-banner, .consent-banner, #onetrust-banner-sdk, #onetrust-consent-sdk, .cookiebot, #CookiebotWidget, .didomi-popup-container, .ads, .ad, .advertisement, [id^="google_ads"], [id^="ad-"], [class*="-ad-"], .sidebar, #sidebar, .aside, .social-share, .comments, #comments, .menu, .breadcrumbs, .related-posts, .author-bio, .footer-nav, .popup, .modal, .overlay, .paywall, .paywall-overlay, .premium-gate, .subscription-gate, .newsletter-signup'
     var DEFAULT_WAIT_FOR_SELECTOR = 'article, main, [role="main"], #root, #app'
 
     var PRESET_TEMPLATES = {
@@ -51,6 +51,10 @@ window.__ModuleLoader__.load({
         waitForSelector: '',
         noCache: false,
         autoBypassCloudflare: true,
+        removeOverlay: true,
+        detachInvisibles: true,
+        withShadowDom: false,
+        withIframe: false,
       },
       research: {
         label: 'Deep Academic Research',
@@ -64,6 +68,10 @@ window.__ModuleLoader__.load({
         waitForSelector: '',
         noCache: false,
         autoBypassCloudflare: true,
+        removeOverlay: true,
+        detachInvisibles: true,
+        withShadowDom: true,
+        withIframe: true,
       },
       'clean-read': {
         label: 'Strict Clean Read (Aggressive Boilerplate Stripping)',
@@ -77,6 +85,10 @@ window.__ModuleLoader__.load({
         waitForSelector: '',
         noCache: false,
         autoBypassCloudflare: true,
+        removeOverlay: true,
+        detachInvisibles: true,
+        withShadowDom: false,
+        withIframe: false,
       },
       'fast-index': {
         label: 'Fast Indexing (Token-Capped)',
@@ -90,6 +102,10 @@ window.__ModuleLoader__.load({
         waitForSelector: '',
         noCache: false,
         autoBypassCloudflare: false,
+        removeOverlay: true,
+        detachInvisibles: true,
+        withShadowDom: false,
+        withIframe: false,
       },
       'spa-resilient': {
         label: 'SPA & Heavy JavaScript (Headless Browser)',
@@ -103,6 +119,27 @@ window.__ModuleLoader__.load({
         waitForSelector: DEFAULT_WAIT_FOR_SELECTOR,
         noCache: true,
         autoBypassCloudflare: true,
+        removeOverlay: true,
+        detachInvisibles: true,
+        withShadowDom: true,
+        withIframe: false,
+      },
+      'adversarial-stealth': {
+        label: 'Adversarial Stealth (Anti-Bot Armor & Evasion)',
+        preset: 'agent',
+        searchNum: '5',
+        tokenBudget: '12000',
+        engine: 'cf-browser-rendering',
+        retainImages: 'none',
+        targetSelector: DEFAULT_TARGET_SELECTORS,
+        removeSelector: DEFAULT_REMOVE_SELECTORS,
+        waitForSelector: DEFAULT_WAIT_FOR_SELECTOR,
+        noCache: true,
+        autoBypassCloudflare: true,
+        removeOverlay: true,
+        detachInvisibles: true,
+        withShadowDom: true,
+        withIframe: false,
       },
     }
 
@@ -163,7 +200,8 @@ window.__ModuleLoader__.load({
       var credentials = typeof getCredentials === 'function' ? getCredentials() : props.credentials
       var settings = typeof getSettings === 'function' ? getSettings() : props.settings
 
-      var [open, setOpen] = React.useState(false)
+      var isPage = props.standalone === true || props.view === 'page'
+      var [open, setOpen] = React.useState(isPage ? true : false)
       var [input, setInput] = React.useState('')
       var [status, setStatus] = React.useState('')
       var [statusKind, setStatusKind] = React.useState('info')
@@ -188,6 +226,10 @@ window.__ModuleLoader__.load({
       var [removeSelectorInput, setRemoveSelectorInput] = React.useState(DEFAULT_REMOVE_SELECTORS)
       var [noCacheInput, setNoCacheInput] = React.useState(false)
       var [autoBypassCfInput, setAutoBypassCfInput] = React.useState(true)
+      var [autoRemoveOverlayInput, setAutoRemoveOverlayInput] = React.useState(true)
+      var [autoDetachInvisiblesInput, setAutoDetachInvisiblesInput] = React.useState(true)
+      var [autoShadowDomInput, setAutoShadowDomInput] = React.useState(false)
+      var [autoIframeInput, setAutoIframeInput] = React.useState(false)
       var [toolsStatus, setToolsStatus] = React.useState('')
       var [toolsStatusKind, setToolsStatusKind] = React.useState('info')
       var toolsDirty = React.useRef(false)
@@ -198,6 +240,17 @@ window.__ModuleLoader__.load({
           if (s) return s
         }
         if (settings) return settings
+        try {
+          if (ctx && typeof ctx.get === 'function') {
+            var rs = ctx.get('remote.settings')
+            if (rs && typeof rs.describe === 'function') return rs
+          }
+        } catch (err) {}
+        try {
+          return remote && remote.settings ? remote.settings : undefined
+        } catch (err) {
+          return undefined
+        }
         var conn = ctx && typeof ctx.get === 'function' ? ctx.get('connection') : undefined
         var a = conn && conn.api ? conn.api : undefined
         if (a && a.settings) {
@@ -217,16 +270,54 @@ window.__ModuleLoader__.load({
             }
           }
         }
-        try {
-          return remote && remote.settings ? remote.settings : undefined
-        } catch (err) {
-          return undefined
+        return undefined
+      }
+
+      var credentialsApi = function () {
+        if (typeof getCredentials === 'function') {
+          var c = getCredentials()
+          if (c) return c
         }
+        if (credentials) return credentials
+        try {
+          if (ctx && typeof ctx.get === 'function') {
+            var rc = ctx.get('remote.credentials')
+            if (rc && typeof rc.describe === 'function') return rc
+          }
+        } catch (err) {}
+        var r = remote || (ctx && typeof ctx.get === 'function' ? ctx.get('remote') : undefined)
+        try {
+          if (r && r.credentials && typeof r.credentials.describe === 'function') return r.credentials
+        } catch (err) {}
+        var conn = ctx && typeof ctx.get === 'function' ? ctx.get('connection') : undefined
+        var a = conn && conn.api ? conn.api : undefined
+        if (a && a.credentials) {
+          return {
+            describe: function (refs) {
+              return a.credentials.describe({ refs: Array.isArray(refs) ? refs : [refs] }).then(function (res) {
+                if (res && res.result && res.result.ok) return { ok: true, value: res.result.value.credentials }
+                return { ok: false, error: res && res.result && res.result.error }
+              })
+            },
+            set: function (ref, value) {
+              return a.credentials.set({ ref: ref, value: value }).then(function (res) {
+                return { ok: Boolean(res && res.result && res.result.ok) }
+              })
+            },
+            unset: function (ref) {
+              return a.credentials.unset({ ref: ref }).then(function (res) {
+                return { ok: Boolean(res && res.result && res.result.ok) }
+              })
+            },
+          }
+        }
+        return undefined
       }
 
       var refresh = function () {
-        if (credentials === undefined) return
-        credentials.describe([CRED]).then(function (response) {
+        var creds = credentialsApi()
+        if (creds === undefined) return
+        creds.describe([CRED]).then(function (response) {
           if (!response || response.ok !== true) return
           setView(response.value[CRED])
         }, function () { /* keep previous view */ })
@@ -286,6 +377,18 @@ window.__ModuleLoader__.load({
           }
           if (typeof val.autoBypassCloudflare === 'boolean') {
             setAutoBypassCfInput(val.autoBypassCloudflare)
+          }
+          if (typeof val.defaultRemoveOverlay === 'boolean') {
+            setAutoRemoveOverlayInput(val.defaultRemoveOverlay)
+          }
+          if (typeof val.defaultDetachInvisibles === 'boolean') {
+            setAutoDetachInvisiblesInput(val.defaultDetachInvisibles)
+          }
+          if (typeof val.defaultWithShadowDom === 'boolean') {
+            setAutoShadowDomInput(val.defaultWithShadowDom)
+          }
+          if (typeof val.defaultWithIframe === 'boolean') {
+            setAutoIframeInput(val.defaultWithIframe)
           }
         }
         return url
@@ -402,14 +505,15 @@ window.__ModuleLoader__.load({
           setStatus('Please enter an API key.')
           return
         }
-        if (credentials === undefined) {
+        var creds = credentialsApi()
+        if (creds === undefined) {
           setStatusKind('bad')
           setStatus('Credentials service unavailable in this environment; unable to save.')
           return
         }
         setStatusKind('info')
         setStatus('Saving…')
-        credentials.set(CRED, value).then(function (response) {
+        creds.set(CRED, value).then(function (response) {
           if (response && response.ok === true) {
             setStatusKind('ok')
             setStatus('Saved.')
@@ -427,14 +531,15 @@ window.__ModuleLoader__.load({
       }
 
       function onClear() {
-        if (credentials === undefined) {
+        var creds = credentialsApi()
+        if (creds === undefined) {
           setStatusKind('bad')
           setStatus('Credentials service unavailable in this environment; unable to clear.')
           return
         }
         setStatusKind('info')
         setStatus('Clearing…')
-        credentials.unset(CRED).then(function (response) {
+        creds.unset(CRED).then(function (response) {
           if (response && response.ok === true) {
             setStatusKind('ok')
             setStatus('Cleared.')
@@ -510,6 +615,10 @@ window.__ModuleLoader__.load({
         setWaitForSelectorInput(t.waitForSelector)
         setNoCacheInput(t.noCache)
         setAutoBypassCfInput(t.autoBypassCloudflare)
+        if (typeof t.removeOverlay === 'boolean') setAutoRemoveOverlayInput(t.removeOverlay)
+        if (typeof t.detachInvisibles === 'boolean') setAutoDetachInvisiblesInput(t.detachInvisibles)
+        if (typeof t.withShadowDom === 'boolean') setAutoShadowDomInput(t.withShadowDom)
+        if (typeof t.withIframe === 'boolean') setAutoIframeInput(t.withIframe)
         setToolsStatusKind('info')
         setToolsStatus('Loaded "' + t.label + '" preset into draft. Click "Save Options" to persist.')
       }
@@ -547,6 +656,18 @@ window.__ModuleLoader__.load({
         if (autoBypassCfInput === false) ops.push({ op: 'set', path: ['autoBypassCloudflare'], value: false })
         else ops.push({ op: 'set', path: ['autoBypassCloudflare'], value: true })
 
+        if (autoRemoveOverlayInput === false) ops.push({ op: 'set', path: ['defaultRemoveOverlay'], value: false })
+        else ops.push({ op: 'set', path: ['defaultRemoveOverlay'], value: true })
+
+        if (autoDetachInvisiblesInput === false) ops.push({ op: 'set', path: ['defaultDetachInvisibles'], value: false })
+        else ops.push({ op: 'set', path: ['defaultDetachInvisibles'], value: true })
+
+        if (autoShadowDomInput === true) ops.push({ op: 'set', path: ['defaultWithShadowDom'], value: true })
+        else ops.push({ op: 'unset', path: ['defaultWithShadowDom'] })
+
+        if (autoIframeInput === true) ops.push({ op: 'set', path: ['defaultWithIframe'], value: true })
+        else ops.push({ op: 'unset', path: ['defaultWithIframe'] })
+
         setToolsStatusKind('info')
         setToolsStatus('Saving tool options…')
         writeProxy(ops, 'Tool options saved successfully.')
@@ -566,6 +687,10 @@ window.__ModuleLoader__.load({
           { op: 'unset', path: ['defaultRemoveSelector'] },
           { op: 'unset', path: ['defaultNoCache'] },
           { op: 'unset', path: ['autoBypassCloudflare'] },
+          { op: 'unset', path: ['defaultRemoveOverlay'] },
+          { op: 'unset', path: ['defaultDetachInvisibles'] },
+          { op: 'unset', path: ['defaultWithShadowDom'] },
+          { op: 'unset', path: ['defaultWithIframe'] },
         ]
         setToolsStatusKind('info')
         setToolsStatus('Resetting tool options to Balanced defaults…')
@@ -777,6 +902,50 @@ window.__ModuleLoader__.load({
           React.createElement('label', { style: Object.assign({}, S.note, { display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', fontWeight: 500, color: 'var(--dsw-alias-label-primary)' }) },
             React.createElement('input', {
               type: 'checkbox',
+              checked: autoRemoveOverlayInput,
+              onChange: function (e) {
+                toolsDirty.current = true
+                setAutoRemoveOverlayInput(e.target.checked)
+              },
+              disabled: isReadOnly,
+            }),
+            'Remove Modal & Paywall Overlays (X-Remove-Overlay: strips cookie walls, popups, and paywall backdrops)'),
+          React.createElement('label', { style: Object.assign({}, S.note, { display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', fontWeight: 500, color: 'var(--dsw-alias-label-primary)' }) },
+            React.createElement('input', {
+              type: 'checkbox',
+              checked: autoDetachInvisiblesInput,
+              onChange: function (e) {
+                toolsDirty.current = true
+                setAutoDetachInvisiblesInput(e.target.checked)
+              },
+              disabled: isReadOnly,
+            }),
+            'Detach Invisible Honeypots & Decoys (X-Detach-Invisibles: purges hidden tracking spans and scraper traps)'),
+          React.createElement('label', { style: Object.assign({}, S.note, { display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', fontWeight: 500, color: 'var(--dsw-alias-label-primary)' }) },
+            React.createElement('input', {
+              type: 'checkbox',
+              checked: autoShadowDomInput,
+              onChange: function (e) {
+                toolsDirty.current = true
+                setAutoShadowDomInput(e.target.checked)
+              },
+              disabled: isReadOnly,
+            }),
+            'Traverse Shadow DOM (X-With-Shadow-Dom: penetrates Web Components and client-side custom elements)'),
+          React.createElement('label', { style: Object.assign({}, S.note, { display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', fontWeight: 500, color: 'var(--dsw-alias-label-primary)' }) },
+            React.createElement('input', {
+              type: 'checkbox',
+              checked: autoIframeInput,
+              onChange: function (e) {
+                toolsDirty.current = true
+                setAutoIframeInput(e.target.checked)
+              },
+              disabled: isReadOnly,
+            }),
+            'Inline Embedded Iframes (X-With-Iframe: extracts content inside embedded frame documents)'),
+          React.createElement('label', { style: Object.assign({}, S.note, { display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', fontWeight: 500, color: 'var(--dsw-alias-label-primary)' }) },
+            React.createElement('input', {
+              type: 'checkbox',
               checked: noCacheInput,
               onChange: function (e) {
                 toolsDirty.current = true
@@ -835,7 +1004,8 @@ window.__ModuleLoader__.load({
         primerLines,
         probeLines)
 
-      return React.createElement('li', { style: S.card },
+      var rootTag = isPage ? 'div' : 'li'
+      return React.createElement(rootTag, { style: Object.assign({}, S.card, isPage ? { margin: '8px 0' } : null) },
         React.createElement('button', {
           type: 'button',
           style: S.header,
@@ -844,7 +1014,7 @@ window.__ModuleLoader__.load({
         },
           React.createElement('div', { style: S.headText },
             React.createElement('p', { style: S.name }, 'Jina Tools'),
-            React.createElement('span', { style: S.description }, 'API key and local proxy configuration for Jina AI search, reader, and embeddings tools.')),
+            React.createElement('span', { style: S.description }, 'API key, local proxy, scraping presets, and anti-bot configuration for Jina AI tools.')),
           React.createElement(Chevron, { open: open })),
         open
           ? React.createElement('div', { style: S.body },
@@ -881,7 +1051,7 @@ window.__ModuleLoader__.load({
     }
 
     exports.name = 'dsh-jina'
-    exports.inject = ['slots', 'connection', 'remote']
+    exports.inject = ['slots', 'remote', 'remote.credentials', 'remote.settings']
 
     exports.apply = function (ctx) {
       var slots = ctx.slots
@@ -892,56 +1062,121 @@ window.__ModuleLoader__.load({
       }
 
       function getCredentials() {
+        try {
+          if (ctx && typeof ctx.get === 'function') {
+            var rc = ctx.get('remote.credentials')
+            if (rc && typeof rc.describe === 'function') return rc
+          }
+        } catch (e) {}
+        var r = typeof ctx.get === 'function' ? ctx.get('remote') : undefined
+        try {
+          if (r && r.credentials && typeof r.credentials.describe === 'function') return r.credentials
+        } catch (e) {}
         var api = getApi()
-        if (!api || !api.credentials) return undefined
-        return {
-          describe: function (refs) {
-            return api.credentials.describe({ refs: Array.isArray(refs) ? refs : [refs] }).then(function (res) {
-              if (res && res.result && res.result.ok) {
-                return { ok: true, value: res.result.value.credentials }
-              }
-              return { ok: false, error: res && res.result && res.result.error }
-            })
-          },
-          set: function (ref, value) {
-            return api.credentials.set({ ref: ref, value: value }).then(function (res) {
-              return { ok: Boolean(res && res.result && res.result.ok) }
-            })
-          },
-          unset: function (ref) {
-            return api.credentials.unset({ ref: ref }).then(function (res) {
-              return { ok: Boolean(res && res.result && res.result.ok) }
-            })
-          },
+        if (api && api.credentials) {
+          return {
+            describe: function (refs) {
+              return api.credentials.describe({ refs: Array.isArray(refs) ? refs : [refs] }).then(function (res) {
+                if (res && res.result && res.result.ok) {
+                  return { ok: true, value: res.result.value.credentials }
+                }
+                return { ok: false, error: res && res.result && res.result.error }
+              })
+            },
+            set: function (ref, value) {
+              return api.credentials.set({ ref: ref, value: value }).then(function (res) {
+                return { ok: Boolean(res && res.result && res.result.ok) }
+              })
+            },
+            unset: function (ref) {
+              return api.credentials.unset({ ref: ref }).then(function (res) {
+                return { ok: Boolean(res && res.result && res.result.ok) }
+              })
+            },
+          }
         }
+        return undefined
       }
 
       function getSettings() {
+        try {
+          if (ctx && typeof ctx.get === 'function') {
+            var rs = ctx.get('remote.settings')
+            if (rs && typeof rs.describe === 'function') return rs
+          }
+        } catch (e) {}
+        var r = typeof ctx.get === 'function' ? ctx.get('remote') : undefined
+        try {
+          if (r && r.settings && typeof r.settings.describe === 'function') return r.settings
+        } catch (e) {}
         var api = getApi()
-        if (!api || !api.settings) return undefined
-        return {
-          describe: function () {
-            return api.settings.describe({}).then(function (res) {
-              if (res && res.result && res.result.ok) {
-                return { ok: true, value: res.result.value }
-              }
-              return { ok: false, error: res && res.result && res.result.error }
-            })
-          },
-          mutate: function (requestOrNs, ops, expectedRevision) {
-            var payload = typeof requestOrNs === 'string'
-              ? { ns: requestOrNs, ops: ops }
-              : requestOrNs
-            return api.settings.mutate(payload).then(function (res) {
-              if (res && res.result && res.result.ok) {
-                return { ok: true, value: res.result.value }
-              }
-              return { ok: false, error: res && res.result && res.result.error }
-            })
-          },
+        if (api && api.settings) {
+          return {
+            describe: function () {
+              return api.settings.describe({}).then(function (res) {
+                if (res && res.result && res.result.ok) {
+                  return { ok: true, value: res.result.value }
+                }
+                return { ok: false, error: res && res.result && res.result.error }
+              })
+            },
+            mutate: function (requestOrNs, ops, expectedRevision) {
+              var payload = typeof requestOrNs === 'string'
+                ? { ns: requestOrNs, ops: ops }
+                : requestOrNs
+              return api.settings.mutate(payload).then(function (res) {
+                if (res && res.result && res.result.ok) {
+                  return { ok: true, value: res.result.value }
+                }
+                return { ok: false, error: res && res.result && res.result.error }
+              })
+            },
+          }
         }
+        return undefined
       }
 
+      // 1. Bundle-level configuration for the new Plugins page (key: 'dsh-jina')
+      ctx.slots.inject('plugins.bundle.config', function () {
+        return slots.register(
+          { name: 'plugins.bundle.config', key: 'dsh-jina' },
+          function (slotProps) {
+            if (slotProps && slotProps.view === 'summary') {
+              return 'API key, local proxy, scraping presets, and anti-bot configuration for Jina AI tools.'
+            }
+            return React.createElement(JinaCard, {
+              ctx: ctx,
+              remote: typeof ctx.get === 'function' ? ctx.get('remote') : undefined,
+              getCredentials: getCredentials,
+              getSettings: getSettings,
+              view: slotProps ? slotProps.view : 'page',
+              standalone: true,
+            })
+          },
+        )
+      })
+
+      // 2. Row-level configuration for the jina-tools row (key: 'dsh-jina#jina-tools')
+      ctx.slots.inject('plugins.row.config', function () {
+        return slots.register(
+          { name: 'plugins.row.config', key: 'dsh-jina#jina-tools' },
+          function (slotProps) {
+            if (slotProps && slotProps.view === 'summary') {
+              return 'API key, local proxy, scraping presets, and anti-bot configuration for Jina AI tools.'
+            }
+            return React.createElement(JinaCard, {
+              ctx: ctx,
+              remote: typeof ctx.get === 'function' ? ctx.get('remote') : undefined,
+              getCredentials: getCredentials,
+              getSettings: getSettings,
+              view: slotProps ? slotProps.view : 'page',
+              standalone: true,
+            })
+          },
+        )
+      })
+
+      // 3. Legacy Settings section slot (key: 'jina-tools') for earlier dsh versions
       ctx.slots.inject('settings.plugin.item', function () {
         return slots.register(
           { name: 'settings.plugin.item', key: 'jina-tools' },
@@ -951,6 +1186,7 @@ window.__ModuleLoader__.load({
               remote: typeof ctx.get === 'function' ? ctx.get('remote') : undefined,
               getCredentials: getCredentials,
               getSettings: getSettings,
+              view: slotProps ? slotProps.view : undefined,
             })
           },
         )

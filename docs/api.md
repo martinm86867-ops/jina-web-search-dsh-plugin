@@ -67,8 +67,11 @@ Converts any URL, raw HTML, PDF, or uploaded document into clean, LLM-ready mark
 - **`targetSelector`**: CSS selector(s) to isolate specific page elements (e.g. `article`, `.main-content`).
 - **`waitForSelector`**: Wait until a CSS selector appears before extraction (useful for SPAs).
 - **`removeSelector`**: Remove unwanted elements (e.g. `.cookie-banner`, `nav`, `footer`).
-- **`withIframe`**: Include iframe content in output.
-- **`withShadowDom`**: Traverse Shadow DOM boundaries.
+- **`removeOverlay`** (`X-Remove-Overlay`): Excises modal overlays, consent popups, and paywall backdrops at the Chromium render layer.
+- **`detachInvisibles`** (`X-Detach-Invisibles`): Detaches zero-pixel honeypots, hidden decoy elements, and scraper tracking traps.
+- **`withIframe`** (`X-With-Iframe`): Inlines embedded iframe document content.
+- **`withShadowDom`** (`X-With-Shadow-Dom`): Traverses and extracts content from open/closed Shadow DOM boundaries.
+- **`cookies`** (`X-Set-Cookie`): Injects session cookies for authenticated requests and paywall bypass.
 
 ---
 

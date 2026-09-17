@@ -47,10 +47,14 @@ export const DEFAULT_REMOVE_SELECTOR_FIELD = 'defaultRemoveSelector'
 export const DEFAULT_NO_CACHE_FIELD = 'defaultNoCache'
 export const DEFAULT_PRESET_FIELD = 'defaultPreset'
 export const AUTO_BYPASS_CF_FIELD = 'autoBypassCloudflare'
+export const DEFAULT_REMOVE_OVERLAY_FIELD = 'defaultRemoveOverlay'
+export const DEFAULT_DETACH_INVISIBLES_FIELD = 'defaultDetachInvisibles'
+export const DEFAULT_WITH_SHADOW_DOM_FIELD = 'defaultWithShadowDom'
+export const DEFAULT_WITH_IFRAME_FIELD = 'defaultWithIframe'
 
-// Standard high-signal default selectors for web extraction
-export const DEFAULT_TARGET_SELECTORS = 'article, main, [role="main"], .markdown-body, .content, #content, .post-content, .article-body, .entry-content'
-export const DEFAULT_REMOVE_SELECTORS = 'header, footer, nav, [role="navigation"], .navbar, .cookie-banner, #cookie-banner, .consent-banner, .banner, .ads, .ad, .sidebar, #sidebar, .aside, .social-share, .comments, #comments'
+// Standard high-signal default selectors for web extraction (hardened against CMS & obfuscated frameworks)
+export const DEFAULT_TARGET_SELECTORS = 'article, main, [role="main"], [role="article"], .markdown-body, .content, #content, .main-content, #main-content, .post-content, .article-body, .entry-content, [itemprop="articleBody"], [itemprop="text"], [data-testid*="article"], [data-testid*="content"]'
+export const DEFAULT_REMOVE_SELECTORS = 'header, footer, nav, aside, [role="navigation"], [role="banner"], [role="contentinfo"], .navbar, .site-header, .site-footer, .cookie-banner, #cookie-banner, .consent-banner, #onetrust-banner-sdk, #onetrust-consent-sdk, .cookiebot, #CookiebotWidget, .didomi-popup-container, .ads, .ad, .advertisement, [id^="google_ads"], [id^="ad-"], [class*="-ad-"], .sidebar, #sidebar, .aside, .social-share, .comments, #comments, .menu, .breadcrumbs, .related-posts, .author-bio, .footer-nav, .popup, .modal, .overlay, .paywall, .paywall-overlay, .premium-gate, .subscription-gate, .newsletter-signup'
 export const DEFAULT_WAIT_FOR_SELECTOR = 'article, main, [role="main"], #root, #app'
 
 export const EXTRACTION_PRESETS = {
@@ -67,6 +71,10 @@ export const EXTRACTION_PRESETS = {
     defaultWaitForSelector: '',
     defaultNoCache: false,
     autoBypassCloudflare: true,
+    defaultRemoveOverlay: true,
+    defaultDetachInvisibles: true,
+    defaultWithShadowDom: false,
+    defaultWithIframe: false,
   },
   research: {
     label: 'Deep Research',
@@ -81,6 +89,10 @@ export const EXTRACTION_PRESETS = {
     defaultWaitForSelector: '',
     defaultNoCache: false,
     autoBypassCloudflare: true,
+    defaultRemoveOverlay: true,
+    defaultDetachInvisibles: true,
+    defaultWithShadowDom: true,
+    defaultWithIframe: true,
   },
   'clean-read': {
     label: 'Strict Clean Read (Aggressive Boilerplate Stripping)',
@@ -95,6 +107,10 @@ export const EXTRACTION_PRESETS = {
     defaultWaitForSelector: '',
     defaultNoCache: false,
     autoBypassCloudflare: true,
+    defaultRemoveOverlay: true,
+    defaultDetachInvisibles: true,
+    defaultWithShadowDom: false,
+    defaultWithIframe: false,
   },
   'fast-index': {
     label: 'Fast Indexing (Token Efficient)',
@@ -109,6 +125,10 @@ export const EXTRACTION_PRESETS = {
     defaultWaitForSelector: '',
     defaultNoCache: false,
     autoBypassCloudflare: false,
+    defaultRemoveOverlay: true,
+    defaultDetachInvisibles: true,
+    defaultWithShadowDom: false,
+    defaultWithIframe: false,
   },
   'spa-resilient': {
     label: 'SPA & Heavy JavaScript (Client-Side Rendered)',
@@ -123,6 +143,28 @@ export const EXTRACTION_PRESETS = {
     defaultWaitForSelector: DEFAULT_WAIT_FOR_SELECTOR,
     defaultNoCache: true,
     autoBypassCloudflare: true,
+    defaultRemoveOverlay: true,
+    defaultDetachInvisibles: true,
+    defaultWithShadowDom: true,
+    defaultWithIframe: false,
+  },
+  'adversarial-stealth': {
+    label: 'Adversarial Stealth (Anti-Bot Armor & Evasion)',
+    description: 'Enforces Cloudflare browser rendering, modal stripping, honeypot detachment, and shadow DOM traversal.',
+    preset: 'agent',
+    defaultSearchNum: 5,
+    defaultTokenBudget: 12000,
+    defaultEngine: 'cf-browser-rendering',
+    defaultRetainImages: 'none',
+    defaultTargetSelector: DEFAULT_TARGET_SELECTORS,
+    defaultRemoveSelector: DEFAULT_REMOVE_SELECTORS,
+    defaultWaitForSelector: DEFAULT_WAIT_FOR_SELECTOR,
+    defaultNoCache: true,
+    autoBypassCloudflare: true,
+    defaultRemoveOverlay: true,
+    defaultDetachInvisibles: true,
+    defaultWithShadowDom: true,
+    defaultWithIframe: false,
   },
 }
 
@@ -137,6 +179,10 @@ export const SETTINGS_FIELDS = {
   defaultTargetSelector: DEFAULT_TARGET_SELECTOR_FIELD,
   defaultRemoveSelector: DEFAULT_REMOVE_SELECTOR_FIELD,
   defaultNoCache: DEFAULT_NO_CACHE_FIELD,
+  defaultRemoveOverlay: DEFAULT_REMOVE_OVERLAY_FIELD,
+  defaultDetachInvisibles: DEFAULT_DETACH_INVISIBLES_FIELD,
+  defaultWithShadowDom: DEFAULT_WITH_SHADOW_DOM_FIELD,
+  defaultWithIframe: DEFAULT_WITH_IFRAME_FIELD,
 }
 
 
@@ -292,6 +338,10 @@ export function toolSettingsOf(section) {
       defaultRemoveSelector: DEFAULT_REMOVE_SELECTORS,
       defaultNoCache: false,
       autoBypassCloudflare: true,
+      defaultRemoveOverlay: true,
+      defaultDetachInvisibles: true,
+      defaultWithShadowDom: false,
+      defaultWithIframe: false,
     }
   }
   const rawBudget = section.defaultTokenBudget
@@ -308,6 +358,10 @@ export function toolSettingsOf(section) {
     defaultRemoveSelector: typeof section.defaultRemoveSelector === 'string' && section.defaultRemoveSelector !== '' ? section.defaultRemoveSelector : DEFAULT_REMOVE_SELECTORS,
     defaultNoCache: typeof section.defaultNoCache === 'boolean' ? section.defaultNoCache : false,
     autoBypassCloudflare: typeof section.autoBypassCloudflare === 'boolean' ? section.autoBypassCloudflare : true,
+    defaultRemoveOverlay: typeof section.defaultRemoveOverlay === 'boolean' ? section.defaultRemoveOverlay : true,
+    defaultDetachInvisibles: typeof section.defaultDetachInvisibles === 'boolean' ? section.defaultDetachInvisibles : true,
+    defaultWithShadowDom: typeof section.defaultWithShadowDom === 'boolean' ? section.defaultWithShadowDom : false,
+    defaultWithIframe: typeof section.defaultWithIframe === 'boolean' ? section.defaultWithIframe : false,
   }
 }
 
@@ -324,6 +378,10 @@ export function createSettingsSchema() {
     defaultRemoveSelector: { type: 'string', meta: {} },
     defaultNoCache: { type: 'boolean', meta: {} },
     autoBypassCloudflare: { type: 'boolean', meta: {} },
+    defaultRemoveOverlay: { type: 'boolean', meta: {} },
+    defaultDetachInvisibles: { type: 'boolean', meta: {} },
+    defaultWithShadowDom: { type: 'boolean', meta: {} },
+    defaultWithIframe: { type: 'boolean', meta: {} },
   }
   const serialized = () => ({ type: 'object', dict })
   const node = (value) => {
@@ -343,6 +401,10 @@ export function createSettingsSchema() {
     if (typeof section.defaultRemoveSelector === 'string' && section.defaultRemoveSelector !== '') out.defaultRemoveSelector = section.defaultRemoveSelector
     if (typeof section.defaultNoCache === 'boolean') out.defaultNoCache = section.defaultNoCache
     if (typeof section.autoBypassCloudflare === 'boolean') out.autoBypassCloudflare = section.autoBypassCloudflare
+    if (typeof section.defaultRemoveOverlay === 'boolean') out.defaultRemoveOverlay = section.defaultRemoveOverlay
+    if (typeof section.defaultDetachInvisibles === 'boolean') out.defaultDetachInvisibles = section.defaultDetachInvisibles
+    if (typeof section.defaultWithShadowDom === 'boolean') out.defaultWithShadowDom = section.defaultWithShadowDom
+    if (typeof section.defaultWithIframe === 'boolean') out.defaultWithIframe = section.defaultWithIframe
     return out
   }
   return Object.assign(node, {

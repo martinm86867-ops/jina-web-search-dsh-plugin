@@ -2,6 +2,18 @@
 
 Full version history of dsh-jina; the "Changelog" section of [README.en.md](./README.en.md) keeps only the latest release.
 
+### 1.0.0 (2026-09-17)
+
+- **feat** **Expanded 16-Tool Intelligence Suite**: Full coverage of web search, batch querying (`jina_search_batch`), structured extraction via ReaderLM-v2 (`jina_extract`), semantic markdown segmentation (`jina_chunk`), local air-gapped document processing (`jina_read_file`), fact verification via Grounding (`jina_fact_check`), dense embeddings (`jina_embed`), reranking (`jina_rerank`), zero-shot classification (`jina_classify`), and document OCR (`jina_pdf`).
+- **feat** **Adversarial Extraction & Anti-Bot Armor**:
+  - Native `removeOverlay` (`X-Remove-Overlay`): Server-side removal of modal interstitials, GDPR/CMP cookie walls, and soft paywalls.
+  - Native `detachInvisibles` (`X-Detach-Invisibles`): Elimination of zero-pixel scraper honeypots and decoy tracking spans.
+  - Native `withShadowDom` (`X-With-Shadow-Dom`) & `withIframe` (`X-With-Iframe`): Traversal of Web Components and embedded frame documents.
+  - Automated Cloudflare Turnstile Bypass (`callJinaWithCfBypass`): Automatic retry with `cf-browser-rendering` on HTTP 403, 503, or Turnstile challenges across reader and extraction tools.
+  - Offline fallback in `jina_read_file` for local plaintext, markdown, and source code files without requiring API credits.
+- **feat** **Adversarial Presets & Web UI Controls**: Added `adversarial-stealth` preset and toggle switches in the Settings panel for modal stripping, honeypot detachment, shadow DOM, and iframes.
+- **test** Added `test/adversarial-extraction.test.js` covering all adversarial parameter mappings, selector resilience, and schema round-trip serialization.
+
 ### 0.6.1 (2026-09-16)
 
 - **fix** Fixed the browser-half crash 0.6.0 introduced, which made the whole **Jina Tools card disappear** (reported from a live console: `Error: cannot get property "remote.settings" without inject`, then `slot entry crashed in 'settings.plugin.item'`). The gateway mounts every Remote namespace as its **own cordis service** `remote.<ns>`, and a consumer must declare that service name in its `inject` before reading the property; 0.6.0 declared only `slots` / `remote` / `remote.credentials`, so the moment `settingsApi()` read `remote.settings` the property access itself threw, the error reached the slot boundary, and the card was replaced by an error boundary. Fix: `exports.inject` now declares `'remote.settings'` (the bundled `ui-settings` client declares `['remote','remote.settings']` too), and the read is wrapped in try/catch so a missing service degrades to the "settings Remote not mounted" notice instead of crashing the slot.

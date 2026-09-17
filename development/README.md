@@ -26,3 +26,16 @@ This directory houses the comprehensive strategic roadmap, gap analysis, archite
 | **Local File Support** | HTTP/HTTPS URLs only; cannot read local files | Local file ingestion (`pdf`, `html`, `docs`) via base64 bridge with multi-modal OCR |
 | **Image Persistence** | Returns remote URL or inline string | Persists screenshots directly into DeepSeek Harness `AttachmentStore` for vision models |
 | **Anti-Bot Resiliency** | Standard cURL engine; blocked by Cloudflare | Support for `cf-browser-rendering` engine to bypass anti-bot challenges |
+| **Adversarial Hardening** | Naive post-render CSS removal only | Chromium pre-render `X-Remove-Overlay`, honeypot `X-Detach-Invisibles`, and Shadow DOM |
+
+---
+
+## Evolution Status: Completed (v1.0.0)
+
+All roadmap milestones (Milestones 1 through 6) have been completed and verified with 100% test passage across 87 assertions:
+- **Milestone 1**: Dynamic DOM Extraction & Precision Scraping (`targetSelector`, `waitForSelector`, `removeSelector`).
+- **Milestone 2**: Presets & Web UI Settings Integration (`createSettingsSchema`, 6 curated presets, Settings card).
+- **Milestone 3**: Server-Side Structured Information Extraction (`jina_extract` via ReaderLM-v2).
+- **Milestone 4**: High-Concurrency Batch Search & Markdown Chunking (`jina_search_batch`, `jina_chunk`).
+- **Milestone 5**: Local File Ingestion & Multimodal Attachments (`jina_read_file`, `ctx.attachment.saveImage`).
+- **Milestone 6 & Hardening**: Full Regression QA, Adversarial Extraction Armor (`X-Remove-Overlay`, `X-Detach-Invisibles`, `X-With-Shadow-Dom`, `callJinaWithCfBypass`), and bilingual documentation release.
