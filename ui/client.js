@@ -1,45 +1,21 @@
-// dsh-jina — browser bundle (prebuilt; no build step required).
-//
-// Executing this script only REGISTERS its factory with the client module
-// system (`window.__ModuleLoader__.load`). The registration id MUST equal the
-// boot-graph row id — the exact package name `dsh-jina` (the host's
-// client-modules scan keys rows by package name; the runtime normalizes a
-// trailing `/client` only, never a subpath). A subpath id (e.g. the historical
-// `dsh-jina/ui`) registers a key nobody asks for, and the module system
-// reports `loaded without registering "dsh-jina"`. The factory materializes on
-// first import and returns a cordis client plugin that contributes a "Jina
-// Tools" card to the standard plugin configuration surface (Settings → Plugins
-// → Configure, the `settings.plugin.item` KEYED slot declared by the web
-// settings package — the same surface that hosts the Terminal / Agent loop /
-// Web search cards). A keyed entry is keyed by the settings namespace the card
-// edits, so the card registers under `key: 'jina-tools'` — the same namespace
-// the host half (index.js) serves — and the tab renders the card only when
-// both halves agree on that namespace.
-//
-// The card manages the `JINA_API_KEY` credential through the standard
-// credentials Remote namespace: `remote.credentials` (the generated `$mount`
-// installs it as its own `remote.credentials` cordis service — inject it, do
-// not reach through the `remote` object) with describe/set/unset. Values cross
-// the wire only on save, and the page shows configured state, never the
-// stored value. It refreshes when the Host reports the reference changed
-// (`credentials/reference-updated`, observed on the `remote` service itself).
-//
-// It also owns the plugin's `jina-tools` settings namespace through the
-// standard settings Remote namespace (`remote.settings`, mounted by the same
-// api-remotes client plugin): the `proxyUrl` field carries a manually
-// configured local proxy address. That is the entry point for a proxy client
-// which listens on a loopback port WITHOUT being the Windows system proxy —
-// WinINET discovery cannot see it, and neither can the harness environment, so
-// without this field every Jina call would go direct and fail. Reads ride
-// `settings.describe`, writes `settings.mutate` fenced by the namespace
-// revision the page read, and external edits (another tab, a hand-edited
-// settings.yaml) arrive as `settings/document-updated` and reload the card.
-//
-// It also runs the key health check: a GET to the host-provided
-// `/api/dsh-jina/primer` route (registered by the bundle's host half when a
-// web server is composed), which answers with the key's Jina identity and
-// credit balance — the same data `jina_primer` reports — and with the proxy the
-// probe actually ran through. The key itself never leaves the host.
+/**
+ * dsh-jina — browser settings card.
+ *
+ * Renders the Jina Tools card in the Web UI Settings tab, backed by the
+ * credentials Remote namespace (`remote.credentials`) with describe/set/unset.
+ * Values cross the wire only on save, and the page shows configured state,
+ * never the stored value.
+ *
+ * It also owns the plugin's `jina-tools` settings namespace through the
+ * standard settings Remote namespace (`remote.settings`), where `proxyUrl`
+ * and default tool behaviors are configured. Reads ride `settings.describe`,
+ * writes ride `settings.mutate` fenced by the namespace revision the page read,
+ * and external edits arrive as `settings/document-updated` and reload the card.
+ *
+ * It also runs the key health check: a GET to `/api/dsh-jina/primer`, which
+ * answers with the key's Jina identity and credit balance — the same data
+ * `jina_primer` reports — and with the proxy the probe actually ran through.
+ */
 window.__ModuleLoader__.load({
   id: 'dsh-jina',
   factory: function (require) {
@@ -48,45 +24,124 @@ window.__ModuleLoader__.load({
     var CRED = 'JINA_API_KEY'
     var NS = 'jina-tools'
     var PROXY_FIELD = 'proxyUrl'
-    // Host-reported proxy source → the label the card shows.
+
     var PROXY_SOURCES = {
-      setting: '设置卡片',
-      envVar: '环境变量 JINA_PROXY_URL',
-      system: 'Windows 系统代理（自动发现）',
-      environment: '启动环境变量（HTTP_PROXY 等）',
-      request: '调用级指定',
-      none: '无（直连）',
+      setting: 'Settings card',
+      envVar: 'Environment variable JINA_PROXY_URL',
+      system: 'Windows system proxy (auto-discovered)',
+      environment: 'Startup environment (HTTP_PROXY, etc.)',
+      request: 'Specified per request',
+      none: 'None (direct connection)',
     }
-    // Host-reported rejection reason code → the label the card shows.
+
+        var DEFAULT_TARGET_SELECTORS = 'article, main, [role="main"], .markdown-body, .content, #content, .post-content, .article-body, .entry-content'
+    var DEFAULT_REMOVE_SELECTORS = 'header, footer, nav, [role="navigation"], .navbar, .cookie-banner, #cookie-banner, .consent-banner, .banner, .ads, .ad, .sidebar, #sidebar, .aside, .social-share, .comments, #comments'
+    var DEFAULT_WAIT_FOR_SELECTOR = 'article, main, [role="main"], #root, #app'
+
+    var PRESET_TEMPLATES = {
+      balanced: {
+        label: 'Balanced (High Signal)',
+        preset: 'agent',
+        searchNum: '5',
+        tokenBudget: '8000',
+        engine: 'auto',
+        retainImages: 'none',
+        targetSelector: DEFAULT_TARGET_SELECTORS,
+        removeSelector: DEFAULT_REMOVE_SELECTORS,
+        waitForSelector: '',
+        noCache: false,
+        autoBypassCloudflare: true,
+      },
+      research: {
+        label: 'Deep Academic Research',
+        preset: 'research',
+        searchNum: '8',
+        tokenBudget: '16000',
+        engine: 'auto',
+        retainImages: 'alt',
+        targetSelector: DEFAULT_TARGET_SELECTORS,
+        removeSelector: DEFAULT_REMOVE_SELECTORS,
+        waitForSelector: '',
+        noCache: false,
+        autoBypassCloudflare: true,
+      },
+      'clean-read': {
+        label: 'Strict Clean Read (Aggressive Boilerplate Stripping)',
+        preset: 'reader',
+        searchNum: '5',
+        tokenBudget: '10000',
+        engine: 'auto',
+        retainImages: 'none',
+        targetSelector: 'article, main, [role="main"], .markdown-body',
+        removeSelector: DEFAULT_REMOVE_SELECTORS + ', .menu, .breadcrumbs, .related-posts, .author-bio, .footer-nav',
+        waitForSelector: '',
+        noCache: false,
+        autoBypassCloudflare: true,
+      },
+      'fast-index': {
+        label: 'Fast Indexing (Token-Capped)',
+        preset: 'index',
+        searchNum: '4',
+        tokenBudget: '4000',
+        engine: 'auto',
+        retainImages: 'none',
+        targetSelector: DEFAULT_TARGET_SELECTORS,
+        removeSelector: DEFAULT_REMOVE_SELECTORS,
+        waitForSelector: '',
+        noCache: false,
+        autoBypassCloudflare: false,
+      },
+      'spa-resilient': {
+        label: 'SPA & Heavy JavaScript (Headless Browser)',
+        preset: 'agent',
+        searchNum: '5',
+        tokenBudget: '12000',
+        engine: 'browser',
+        retainImages: 'none',
+        targetSelector: DEFAULT_TARGET_SELECTORS,
+        removeSelector: DEFAULT_REMOVE_SELECTORS,
+        waitForSelector: DEFAULT_WAIT_FOR_SELECTOR,
+        noCache: true,
+        autoBypassCloudflare: true,
+      },
+    }
+
     var PROXY_REJECTS = {
-      scheme: '只支持 http:// 或 https:// 代理',
-      invalid: '地址格式不正确',
-      empty: '地址为空',
-      type: '地址不是字符串',
+      scheme: 'Only http:// or https:// proxies are supported',
+      invalid: 'Invalid address format',
+      empty: 'Address is empty',
+      type: 'Address is not a string',
     }
 
     var S = {
-      card: { boxSizing: 'border-box', background: 'var(--dsw-alias-bg-layer-2)', borderRadius: 16, boxShadow: 'var(--dsw-shadow-lv3)', overflow: 'hidden', margin: 0, listStyle: 'none' },
+      card: { boxSizing: 'border-box', background: 'var(--dsw-alias-bg-layer-2)', borderRadius: 16, boxShadow: 'var(--dsw-shadow-lv3)', overflow: 'hidden', margin: 0, listStyle: 'none', border: '1px solid var(--dsw-alias-border-l2, rgba(127,127,127,0.2))' },
       header: { boxSizing: 'border-box', width: '100%', display: 'flex', alignItems: 'center', gap: 12, border: 'none', background: 'transparent', cursor: 'pointer', padding: '14px 18px', fontFamily: 'inherit', textAlign: 'left', color: 'inherit' },
       headText: { display: 'flex', flexDirection: 'column', gap: 2, flex: 1, minWidth: 0 },
-      name: { fontSize: 15, fontWeight: 500, color: 'var(--dsw-alias-label-primary)', lineHeight: '22px', margin: 0 },
-      description: { fontSize: 12, lineHeight: '18px', color: 'var(--dsw-alias-label-secondary, rgba(127,127,127,0.92))', margin: 0 },
-      chevron: { flex: 'none', color: 'var(--dsw-alias-label-secondary, rgba(127,127,127,0.92))', transition: 'transform .15s ease', display: 'block' },
-      body: { boxSizing: 'border-box', display: 'flex', flexDirection: 'column', gap: 12, padding: '0 18px 16px' },
+      name: { fontSize: 15, fontWeight: 600, color: 'var(--dsw-alias-label-primary)', lineHeight: '22px', margin: 0 },
+      description: { fontSize: 12, lineHeight: '18px', color: 'var(--dsw-alias-label-secondary, rgba(127,127,127,0.85))', margin: 0 },
+      chevron: { flex: 'none', color: 'var(--dsw-alias-label-secondary, rgba(127,127,127,0.85))', transition: 'transform .15s ease', display: 'block' },
+      body: { boxSizing: 'border-box', display: 'flex', flexDirection: 'column', gap: 14, padding: '0 18px 18px' },
       row: { display: 'flex', gap: 8, alignItems: 'center' },
-      input: { boxSizing: 'border-box', flex: 1, minWidth: 0, height: 36, borderRadius: 10, border: '1px solid rgba(127,127,127,0.35)', background: 'var(--dsw-alias-bg-layer-1, transparent)', color: 'var(--dsw-alias-label-primary)', padding: '0 12px', fontSize: 13, fontFamily: 'inherit', outline: 'none' },
-      button: { boxSizing: 'border-box', height: 36, borderRadius: 10, border: 'none', padding: '0 18px', cursor: 'pointer', fontSize: 13, fontWeight: 500, background: 'var(--dsw-alias-interactive-bg-hover)', color: 'var(--dsw-alias-label-primary)', fontFamily: 'inherit' },
-      ghostButton: { boxSizing: 'border-box', height: 36, borderRadius: 10, border: '1px solid rgba(127,127,127,0.35)', padding: '0 18px', cursor: 'pointer', fontSize: 13, fontWeight: 500, background: 'transparent', color: 'var(--dsw-alias-label-secondary, rgba(127,127,127,0.92))', fontFamily: 'inherit' },
-      smallButton: { boxSizing: 'border-box', height: 26, borderRadius: 8, border: '1px solid rgba(127,127,127,0.35)', padding: '0 10px', cursor: 'pointer', fontSize: 12, fontWeight: 500, background: 'transparent', color: 'var(--dsw-alias-label-secondary, rgba(127,127,127,0.92))', fontFamily: 'inherit' },
-      infoBox: { boxSizing: 'border-box', border: '1px solid rgba(127,127,127,0.25)', borderRadius: 12, padding: '10px 12px', display: 'flex', flexDirection: 'column', gap: 6 },
-      infoHead: { display: 'flex', alignItems: 'center', gap: 8, justifyContent: 'space-between' },
-      infoLabel: { fontSize: 12, fontWeight: 500, color: 'var(--dsw-alias-label-primary)', margin: 0 },
+      input: { boxSizing: 'border-box', flex: 1, minWidth: 0, height: 36, borderRadius: 8, border: '1px solid var(--dsw-alias-border-l2, rgba(127,127,127,0.35))', background: 'var(--dsw-alias-bg-layer-3, rgba(0,0,0,0.15))', color: 'var(--dsw-alias-label-primary)', padding: '0 12px', fontSize: 13, fontFamily: 'inherit', outline: 'none' },
+      button: { boxSizing: 'border-box', height: 34, borderRadius: 8, border: 'none', padding: '0 16px', cursor: 'pointer', fontSize: 13, fontWeight: 500, background: 'var(--dsw-alias-label-primary)', color: 'var(--dsw-alias-bg-layer-2, #1e1e20)', fontFamily: 'inherit' },
+      ghostButton: { boxSizing: 'border-box', height: 34, borderRadius: 8, border: '1px solid var(--dsw-alias-border-l2, rgba(127,127,127,0.35))', padding: '0 16px', cursor: 'pointer', fontSize: 13, fontWeight: 500, background: 'transparent', color: 'var(--dsw-alias-label-secondary, rgba(127,127,127,0.92))', fontFamily: 'inherit' },
+      link: { color: 'var(--dsw-alias-brand-primary, #4b88ff)', textDecoration: 'none' },
       status: { fontSize: 12, lineHeight: '18px', color: 'var(--dsw-alias-label-secondary, rgba(127,127,127,0.92))', margin: 0 },
-      statusOk: { fontSize: 12, lineHeight: '18px', color: 'var(--dsw-alias-status-success, #2f9e44)', margin: 0 },
-      statusBad: { fontSize: 12, lineHeight: '18px', color: 'var(--dsw-alias-status-danger, #e03131)', margin: 0 },
-      mono: { fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace', fontSize: 12, lineHeight: '18px', color: 'var(--dsw-alias-label-primary)', margin: 0, wordBreak: 'break-all' },
-      note: { fontSize: 12, lineHeight: '18px', color: 'var(--dsw-alias-label-tertiary, rgba(127,127,127,0.6))', margin: 0 },
-      link: { color: 'var(--dsw-alias-label-link, var(--dsw-alias-label-primary))', textDecoration: 'underline', cursor: 'pointer' },
+      statusOk: { fontSize: 12, lineHeight: '18px', color: 'var(--dsw-alias-label-success, #22c55e)', margin: 0 },
+      statusBad: { fontSize: 12, lineHeight: '18px', color: 'var(--dsw-alias-label-error, #ef4444)', margin: 0 },
+      note: { fontSize: 12, lineHeight: 1.5, color: 'var(--dsw-alias-label-secondary, rgba(127,127,127,0.92))', margin: 0 },
+      infoBox: { boxSizing: 'border-box', display: 'flex', flexDirection: 'column', gap: 12, background: 'var(--dsw-alias-bg-layer-1, rgba(127,127,127,0.06))', border: '1px solid var(--dsw-alias-border-l2, rgba(127,127,127,0.2))', borderRadius: 12, padding: '14px 16px' },
+      infoHead: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 },
+      infoLabel: { fontSize: 13, fontWeight: 600, color: 'var(--dsw-alias-label-primary)', margin: 0 },
+      smallButton: { boxSizing: 'border-box', height: 26, borderRadius: 6, border: '1px solid var(--dsw-alias-border-l2, rgba(127,127,127,0.35))', padding: '0 10px', cursor: 'pointer', fontSize: 11, fontWeight: 500, background: 'transparent', color: 'var(--dsw-alias-label-secondary, rgba(127,127,127,0.92))', fontFamily: 'inherit' },
+
+      // Structured field styles
+      fieldGroup: { boxSizing: 'border-box', display: 'flex', flexDirection: 'column', gap: 6 },
+      fieldLabel: { fontSize: 12, fontWeight: 600, color: 'var(--dsw-alias-label-primary)', margin: 0 },
+      fieldHint: { fontSize: 11, lineHeight: 1.4, color: 'var(--dsw-alias-label-tertiary, rgba(127,127,127,0.75))', margin: 0 },
+      formInput: { boxSizing: 'border-box', width: '100%', height: 34, borderRadius: 8, border: '1px solid var(--dsw-alias-border-l2, rgba(127,127,127,0.3))', background: 'var(--dsw-alias-bg-layer-3, rgba(0,0,0,0.18))', color: 'var(--dsw-alias-label-primary)', padding: '0 10px', fontSize: 13, fontFamily: 'inherit', outline: 'none' },
+      formSelect: { boxSizing: 'border-box', width: '100%', height: 34, borderRadius: 8, border: '1px solid var(--dsw-alias-border-l2, rgba(127,127,127,0.3))', background: 'var(--dsw-alias-bg-layer-3, rgba(0,0,0,0.18))', color: 'var(--dsw-alias-label-primary)', padding: '0 8px', fontSize: 13, fontFamily: 'inherit', outline: 'none', cursor: 'pointer' },
+      grid: { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(230px, 1fr))', gap: 12 },
     }
 
     function Chevron(props) {
@@ -101,30 +156,67 @@ window.__ModuleLoader__.load({
     }
 
     function JinaCard(props) {
-      var remote = props.remote
-      var credentials = props.credentials
+      var ctx = props.ctx
+      var remote = props.remote || (ctx && typeof ctx.get === 'function' ? ctx.get('remote') : undefined)
+      var getCredentials = props.getCredentials
+      var getSettings = props.getSettings
+      var credentials = typeof getCredentials === 'function' ? getCredentials() : props.credentials
+      var settings = typeof getSettings === 'function' ? getSettings() : props.settings
+
       var [open, setOpen] = React.useState(false)
       var [input, setInput] = React.useState('')
       var [status, setStatus] = React.useState('')
-      var [statusKind, setStatusKind] = React.useState('info') // 'info' | 'ok' | 'bad'
-      var [view, setView] = React.useState(undefined) // {configured, writable} | undefined while loading
+      var [statusKind, setStatusKind] = React.useState('info')
+      var [view, setView] = React.useState(undefined)
       var [primer, setPrimer] = React.useState({ phase: 'loading', data: undefined, error: undefined })
-      // ---- manual local proxy ---------------------------------------------
-      // `proxyView` mirrors the host's `jina-tools` namespace: phase 'ready'
-      // carries the stored address, the revision the next write is fenced
-      // against, and whether the document accepts writes at all.
-      var [proxyView, setProxyView] = React.useState({ phase: 'loading', url: '', revision: undefined, writable: false, error: '' })
+
+      // Proxy state
+      var [proxyView, setProxyView] = React.useState({ phase: 'ready', url: '', revision: undefined, writable: true, error: '' })
       var [proxyInput, setProxyInput] = React.useState('')
       var [proxyStatus, setProxyStatus] = React.useState('')
       var [proxyStatusKind, setProxyStatusKind] = React.useState('info')
       var proxyDirty = React.useRef(false)
 
+      // Tool options state
+      var [activePresetInput, setActivePresetInput] = React.useState('balanced')
+      var [searchNumInput, setSearchNumInput] = React.useState('5')
+      var [tokenBudgetInput, setTokenBudgetInput] = React.useState('')
+      var [engineInput, setEngineInput] = React.useState('auto')
+      var [retainImagesInput, setRetainImagesInput] = React.useState('none')
+      var [waitForSelectorInput, setWaitForSelectorInput] = React.useState('')
+      var [targetSelectorInput, setTargetSelectorInput] = React.useState(DEFAULT_TARGET_SELECTORS)
+      var [removeSelectorInput, setRemoveSelectorInput] = React.useState(DEFAULT_REMOVE_SELECTORS)
+      var [noCacheInput, setNoCacheInput] = React.useState(false)
+      var [autoBypassCfInput, setAutoBypassCfInput] = React.useState(true)
+      var [toolsStatus, setToolsStatus] = React.useState('')
+      var [toolsStatusKind, setToolsStatusKind] = React.useState('info')
+      var toolsDirty = React.useRef(false)
+
       var settingsApi = function () {
-        // `remote.settings` is its own cordis service (the gateway mounts every
-        // Remote namespace as `remote.<ns>`): reading it requires the consumer
-        // to declare that service in `inject`, and a missing declaration throws
-        // from the property access itself. The declaration below is the fix;
-        // this guard keeps a surprise from crashing the whole slot entry.
+        if (typeof getSettings === 'function') {
+          var s = getSettings()
+          if (s) return s
+        }
+        if (settings) return settings
+        var conn = ctx && typeof ctx.get === 'function' ? ctx.get('connection') : undefined
+        var a = conn && conn.api ? conn.api : undefined
+        if (a && a.settings) {
+          return {
+            describe: function () {
+              return a.settings.describe({}).then(function (res) {
+                if (res && res.result && res.result.ok) return { ok: true, value: res.result.value }
+                return { ok: false, error: res && res.result && res.result.error }
+              })
+            },
+            mutate: function (requestOrNs, ops, expectedRevision) {
+              var payload = typeof requestOrNs === 'string' ? { ns: requestOrNs, ops: ops } : requestOrNs
+              return a.settings.mutate(payload).then(function (res) {
+                if (res && res.result && res.result.ok) return { ok: true, value: res.result.value }
+                return { ok: false, error: res && res.result && res.result.error }
+              })
+            }
+          }
+        }
         try {
           return remote && remote.settings ? remote.settings : undefined
         } catch (err) {
@@ -150,81 +242,128 @@ window.__ModuleLoader__.load({
         })
       }
 
-      /** Adopt one settings namespace view (describe row or mutate answer). */
       var adoptProxy = function (row, writable) {
-        var url = row && row.value && typeof row.value[PROXY_FIELD] === 'string' ? row.value[PROXY_FIELD] : ''
+        var val = Object.assign({}, row && row.base, row && row.value, row && row.user)
+        var url = typeof val[PROXY_FIELD] === 'string' ? val[PROXY_FIELD] : ''
         setProxyView({
           phase: 'ready',
           url: url,
           revision: row ? row.revision : undefined,
-          writable: writable === true,
+          writable: writable !== false,
           error: '',
         })
         if (!proxyDirty.current) setProxyInput(url)
+        if (!toolsDirty.current) {
+          if (typeof val.defaultPreset === 'string' && PRESET_TEMPLATES[val.defaultPreset]) {
+            setActivePresetInput(val.defaultPreset)
+          }
+          if (typeof val.defaultSearchNum === 'number') {
+            setSearchNumInput(String(val.defaultSearchNum))
+          }
+          var rawBudget = val.defaultTokenBudget
+          if (rawBudget !== undefined && rawBudget !== null && String(rawBudget).trim() !== '' && !isNaN(Number(rawBudget))) {
+            setTokenBudgetInput(String(rawBudget))
+          } else {
+            setTokenBudgetInput('')
+          }
+          if (typeof val.defaultEngine === 'string' && val.defaultEngine !== '') {
+            setEngineInput(val.defaultEngine)
+          }
+          if (typeof val.defaultRetainImages === 'string' && val.defaultRetainImages !== '') {
+            setRetainImagesInput(val.defaultRetainImages)
+          }
+          if (typeof val.defaultWaitForSelector === 'string') {
+            setWaitForSelectorInput(val.defaultWaitForSelector)
+          }
+          if (typeof val.defaultTargetSelector === 'string') {
+            setTargetSelectorInput(val.defaultTargetSelector)
+          }
+          if (typeof val.defaultRemoveSelector === 'string') {
+            setRemoveSelectorInput(val.defaultRemoveSelector)
+          }
+          if (typeof val.defaultNoCache === 'boolean') {
+            setNoCacheInput(val.defaultNoCache)
+          }
+          if (typeof val.autoBypassCloudflare === 'boolean') {
+            setAutoBypassCfInput(val.autoBypassCloudflare)
+          }
+        }
         return url
       }
 
       var loadProxy = function () {
         var api = settingsApi()
         if (api === undefined || typeof api.describe !== 'function') {
-          setProxyView({ phase: 'unavailable', url: '', revision: undefined, writable: false, error: '当前环境未挂载 settings Remote，无法在此配置本地代理；可改用环境变量 JINA_PROXY_URL。' })
+          setProxyView(function (prev) {
+            return Object.assign({}, prev, { phase: 'ready', writable: true, error: '' })
+          })
           return
         }
         api.describe().then(function (response) {
           if (!response || response.ok !== true) {
-            var message = (response && response.error && response.error.message) || 'settings.describe 失败'
-            setProxyView({ phase: 'unavailable', url: '', revision: undefined, writable: false, error: message })
+            var message = (response && response.error && response.error.message) || 'settings.describe failed'
+            setProxyView(function (prev) {
+              return Object.assign({}, prev, { phase: 'ready', writable: true, error: message })
+            })
             return
           }
           var doc = response.value || {}
           var rows = Array.isArray(doc.namespaces) ? doc.namespaces : []
           var row = rows.filter(function (entry) { return entry && entry.ns === NS })[0]
           if (row === undefined) {
-            setProxyView({ phase: 'unavailable', url: '', revision: undefined, writable: doc.writable === true, error: '主机未提供 ' + NS + ' 设置命名空间（当前 profile 可能没有 settings 提供方）。' })
+            adoptProxy({ value: {}, revision: doc.revision }, doc.writable !== false)
             return
           }
-          adoptProxy(row, doc.writable === true)
+          adoptProxy(row, doc.writable !== false)
         }, function (err) {
-          setProxyView({ phase: 'unavailable', url: '', revision: undefined, writable: false, error: String((err && err.message) || err) })
+          setProxyView(function (prev) {
+            return Object.assign({}, prev, { phase: 'ready', writable: true, error: String((err && err.message) || err) })
+          })
         })
       }
 
-      /** Write one field operation into the namespace, fenced by our revision. */
       var writeProxy = function (ops, okMessage) {
         var api = settingsApi()
         if (api === undefined || typeof api.mutate !== 'function') {
           setProxyStatusKind('bad')
-          setProxyStatus('当前环境未挂载 settings Remote，无法保存。')
+          setProxyStatus('Settings service unavailable in this environment; unable to save.')
+          setToolsStatusKind('bad')
+          setToolsStatus('Settings service unavailable in this environment; unable to save.')
           return
         }
-        if (proxyView.phase !== 'ready') {
+        if (proxyView.writable === false) {
           setProxyStatusKind('bad')
-          setProxyStatus('设置尚未加载完成，请稍后重试。')
-          return
-        }
-        if (!proxyView.writable) {
-          setProxyStatusKind('bad')
-          setProxyStatus('当前环境只读（设置文档不可写），无法在此保存。')
+          setProxyStatus('Current environment is read-only (settings document is not writable); cannot save here.')
+          setToolsStatusKind('bad')
+          setToolsStatus('Current environment is read-only (settings document is not writable); cannot save here.')
           return
         }
         setProxyStatusKind('info')
-        setProxyStatus('保存中…')
+        setProxyStatus('Saving…')
+        setToolsStatusKind('info')
+        setToolsStatus('Saving…')
         api.mutate(NS, ops, proxyView.revision).then(function (response) {
           if (response && response.ok === true) {
+            toolsDirty.current = false
+            proxyDirty.current = false
             adoptProxy(response.value, proxyView.writable)
             setProxyStatusKind('ok')
             setProxyStatus(okMessage)
+            setToolsStatusKind('ok')
+            setToolsStatus(okMessage)
             loadPrimer()
           } else {
-            var message = (response && response.error && response.error.message) || '未知错误'
+            var message = (response && response.error && (response.error.message || response.error.code)) || 'Unknown error'
             setProxyStatusKind('bad')
-            setProxyStatus('保存失败：' + message + '（已重新读取当前设置，请重试）')
-            proxyDirty.current = false
-            loadProxy()
+            setProxyStatus('Save failed: ' + message)
+            setToolsStatusKind('bad')
+            setToolsStatus('Save failed: ' + message)
           }
-        }, function () {
+        }, function (err) {
           setProxyStatusKind('bad')
-          setProxyStatus('保存失败，请重试。')
+          setProxyStatus('Save failed. Please try again.')
+          setToolsStatusKind('bad')
+          setToolsStatus('Save failed: ' + String((err && err.message) || err))
         })
       }
 
@@ -232,91 +371,96 @@ window.__ModuleLoader__.load({
         refresh()
         loadProxy()
         loadPrimer()
-        var disposers = [
-          remote.$on('credentials/reference-updated', function (ref) {
-            if (ref === CRED) {
-              refresh()
-              loadPrimer()
-            }
-          }),
-          remote.$on('settings/document-updated', function (ns) {
-            // Our own write answers already carry the new view; this covers
-            // edits from another tab or a hand-edited settings.yaml.
-            if (ns === undefined || ns === NS) loadProxy()
-          }),
-        ]
+      }, [])
+
+      React.useEffect(function () {
+        if (!remote || typeof remote.$on !== 'function') return
+        var offCreds = remote.$on('credentials/reference-updated', function (payload) {
+          if (!payload || !Array.isArray(payload.refs)) return
+          if (payload.refs.indexOf(CRED) !== -1) {
+            refresh()
+            loadPrimer()
+          }
+        })
+        var offSettings = remote.$on('settings/document-updated', function () {
+          proxyDirty.current = false
+          toolsDirty.current = false
+          loadProxy()
+        })
         return function () {
-          for (var i = 0; i < disposers.length; i++) if (typeof disposers[i] === 'function') disposers[i]()
+          if (typeof offCreds === 'function') offCreds()
+          if (typeof offSettings === 'function') offSettings()
         }
       }, [remote])
 
       function onInput(e) { setInput(e.target.value) }
 
       function onSave() {
-        if (input.trim() === '') {
+        var value = input.trim()
+        if (value === '') {
           setStatusKind('bad')
-          setStatus('请输入 API key。')
+          setStatus('Please enter an API key.')
           return
         }
         if (credentials === undefined) {
           setStatusKind('bad')
-          setStatus('当前环境未挂载凭据控制面（credentials Remote），无法保存。')
+          setStatus('Credentials service unavailable in this environment; unable to save.')
           return
         }
         setStatusKind('info')
-        setStatus('保存中…')
-        credentials.set(CRED, input.trim()).then(function (response) {
+        setStatus('Saving…')
+        credentials.set(CRED, value).then(function (response) {
           if (response && response.ok === true) {
             setStatusKind('ok')
-            setStatus('已保存。')
+            setStatus('Saved.')
             setInput('')
             refresh()
             loadPrimer()
           } else {
             setStatusKind('bad')
-            setStatus('保存失败：' + String((response && response.error && response.error.message) || '未知错误'))
+            setStatus('Save failed: ' + String((response && response.error && response.error.message) || 'Unknown error'))
           }
         }, function () {
           setStatusKind('bad')
-          setStatus('保存失败，请重试。')
+          setStatus('Save failed. Please try again.')
         })
       }
 
       function onClear() {
         if (credentials === undefined) {
           setStatusKind('bad')
-          setStatus('当前环境未挂载凭据控制面（credentials Remote），无法清除。')
+          setStatus('Credentials service unavailable in this environment; unable to clear.')
           return
         }
         setStatusKind('info')
-        setStatus('清除中…')
+        setStatus('Clearing…')
         credentials.unset(CRED).then(function (response) {
           if (response && response.ok === true) {
             setStatusKind('ok')
-            setStatus('已清除。')
+            setStatus('Cleared.')
+            setInput('')
             refresh()
             loadPrimer()
           } else {
             setStatusKind('bad')
-            setStatus('清除失败：' + String((response && response.error && response.error.message) || '未知错误'))
+            setStatus('Clear failed: ' + String((response && response.error && response.error.message) || 'Unknown error'))
           }
         }, function () {
           setStatusKind('bad')
-          setStatus('清除失败，请重试。')
+          setStatus('Clear failed. Please try again.')
         })
       }
 
       var configured = view ? view.configured === true : false
       var writable = view ? view.writable === true : false
       var shown = view === undefined
-        ? '正在读取设置…'
+        ? 'Reading settings…'
         : configured
-          ? 'API key 已保存（来源：' + String(view.source || '本机存储') + '）。粘贴新 key 并保存即可覆盖。'
-          : '尚未保存 API key。'
-      var statusStyle = statusKind === 'ok' ? S.statusOk : (statusKind === 'bad' ? S.statusBad : S.status)
-      var proxyStatusStyle = proxyStatusKind === 'ok' ? S.statusOk : (proxyStatusKind === 'bad' ? S.statusBad : S.status)
+          ? 'API key configured (source: ' + String(view.source || 'local storage') + '). Paste a new key and save to overwrite.'
+          : 'No API key configured.'
 
-      // ---- manual proxy block -----------------------------------------------
+      var statusStyle = statusKind === 'ok' ? S.statusOk : statusKind === 'bad' ? S.statusBad : S.status
+
       function onProxyInput(e) {
         proxyDirty.current = true
         setProxyInput(e.target.value)
@@ -326,109 +470,368 @@ window.__ModuleLoader__.load({
         var value = proxyInput.trim()
         if (value === '') {
           setProxyStatusKind('bad')
-          setProxyStatus('请输入本地代理地址，例如 http://127.0.0.1:7897。')
+          setProxyStatus('Please enter a local proxy address, e.g. http://127.0.0.1:7897.')
           return
         }
-        var scheme = /^([a-z][a-z0-9+.-]*):\/\//i.exec(value)
-        if (scheme !== null && scheme[1].toLowerCase() !== 'http' && scheme[1].toLowerCase() !== 'https') {
+        if (!/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(value)) value = 'http://' + value
+        if (!/^https?:\/\//i.test(value)) {
           setProxyStatusKind('bad')
-          setProxyStatus('只支持 http:// 或 https:// 代理（例如 http://127.0.0.1:7897）。socks:// 不会被网络 helper 使用。')
+          setProxyStatus('Only http:// or https:// proxies are supported (e.g. http://127.0.0.1:7897). socks:// is not supported by the network helper.')
           return
         }
-        if (scheme === null && !/^[^\s/]+:\d+$/.test(value)) {
+        try {
+          var parsed = new URL(value)
+          if (!parsed.hostname) throw new Error('no host')
+        } catch (err) {
           setProxyStatusKind('bad')
-          setProxyStatus('请填写「主机:端口」（例如 127.0.0.1:7897）或完整地址（例如 http://127.0.0.1:7897）。')
+          setProxyStatus('Please enter "host:port" (e.g. 127.0.0.1:7897) or a full URL (e.g. http://127.0.0.1:7897).')
           return
         }
         proxyDirty.current = false
-        writeProxy([{ op: 'set', path: [PROXY_FIELD], value: value }], '已保存，下一次调用立即生效。')
+        writeProxy([{ op: 'set', path: [PROXY_FIELD], value: value }], 'Saved. Takes effect on the next tool call.')
       }
 
       function onProxyClear() {
         proxyDirty.current = false
-        writeProxy([{ op: 'unset', path: [PROXY_FIELD] }], '已清除，回到自动检测（系统代理 / 环境变量）。')
+        writeProxy([{ op: 'unset', path: [PROXY_FIELD] }], 'Cleared. Returned to auto-detection (system proxy / environment variables).')
       }
 
-      var proxyConfigured = proxyView.url !== ''
+      function applyPreset(presetKey) {
+        var t = PRESET_TEMPLATES[presetKey]
+        if (!t) return
+        toolsDirty.current = true
+        setActivePresetInput(presetKey)
+        setSearchNumInput(t.searchNum)
+        setTokenBudgetInput(t.tokenBudget)
+        setEngineInput(t.engine)
+        setRetainImagesInput(t.retainImages)
+        setTargetSelectorInput(t.targetSelector)
+        setRemoveSelectorInput(t.removeSelector)
+        setWaitForSelectorInput(t.waitForSelector)
+        setNoCacheInput(t.noCache)
+        setAutoBypassCfInput(t.autoBypassCloudflare)
+        setToolsStatusKind('info')
+        setToolsStatus('Loaded "' + t.label + '" preset into draft. Click "Save Options" to persist.')
+      }
+
+      function onSaveTools() {
+        var ops = []
+        if (activePresetInput) ops.push({ op: 'set', path: ['defaultPreset'], value: activePresetInput })
+
+        var num = parseInt(searchNumInput, 10)
+        if (!isNaN(num) && num > 0) ops.push({ op: 'set', path: ['defaultSearchNum'], value: num })
+        else ops.push({ op: 'unset', path: ['defaultSearchNum'] })
+
+        var budget = parseInt(tokenBudgetInput, 10)
+        if (!isNaN(budget) && budget > 0) ops.push({ op: 'set', path: ['defaultTokenBudget'], value: budget })
+        else ops.push({ op: 'unset', path: ['defaultTokenBudget'] })
+
+        if (engineInput && engineInput !== 'auto') ops.push({ op: 'set', path: ['defaultEngine'], value: engineInput })
+        else ops.push({ op: 'unset', path: ['defaultEngine'] })
+
+        if (retainImagesInput && retainImagesInput !== 'none') ops.push({ op: 'set', path: ['defaultRetainImages'], value: retainImagesInput })
+        else ops.push({ op: 'unset', path: ['defaultRetainImages'] })
+
+        if (waitForSelectorInput.trim() !== '') ops.push({ op: 'set', path: ['defaultWaitForSelector'], value: waitForSelectorInput.trim() })
+        else ops.push({ op: 'unset', path: ['defaultWaitForSelector'] })
+
+        if (targetSelectorInput.trim() !== '') ops.push({ op: 'set', path: ['defaultTargetSelector'], value: targetSelectorInput.trim() })
+        else ops.push({ op: 'unset', path: ['defaultTargetSelector'] })
+
+        if (removeSelectorInput.trim() !== '') ops.push({ op: 'set', path: ['defaultRemoveSelector'], value: removeSelectorInput.trim() })
+        else ops.push({ op: 'unset', path: ['defaultRemoveSelector'] })
+
+        if (noCacheInput === true) ops.push({ op: 'set', path: ['defaultNoCache'], value: true })
+        else ops.push({ op: 'unset', path: ['defaultNoCache'] })
+
+        if (autoBypassCfInput === false) ops.push({ op: 'set', path: ['autoBypassCloudflare'], value: false })
+        else ops.push({ op: 'set', path: ['autoBypassCloudflare'], value: true })
+
+        setToolsStatusKind('info')
+        setToolsStatus('Saving tool options…')
+        writeProxy(ops, 'Tool options saved successfully.')
+      }
+
+      function onResetTools() {
+        toolsDirty.current = false
+        applyPreset('balanced')
+        var ops = [
+          { op: 'unset', path: ['defaultPreset'] },
+          { op: 'unset', path: ['defaultSearchNum'] },
+          { op: 'unset', path: ['defaultTokenBudget'] },
+          { op: 'unset', path: ['defaultEngine'] },
+          { op: 'unset', path: ['defaultRetainImages'] },
+          { op: 'unset', path: ['defaultWaitForSelector'] },
+          { op: 'unset', path: ['defaultTargetSelector'] },
+          { op: 'unset', path: ['defaultRemoveSelector'] },
+          { op: 'unset', path: ['defaultNoCache'] },
+          { op: 'unset', path: ['autoBypassCloudflare'] },
+        ]
+        setToolsStatusKind('info')
+        setToolsStatus('Resetting tool options to Balanced defaults…')
+        writeProxy(ops, 'Tool options reset to Balanced defaults.')
+      }
+
+      var proxyConfigured = typeof proxyView.url === 'string' && proxyView.url.trim() !== ''
       var proxyShown
-      if (proxyView.phase === 'loading') proxyShown = '正在读取设置…'
-      else if (proxyView.phase === 'unavailable') proxyShown = proxyView.error + ' 自动检测仍然生效：Windows 系统代理、启动环境变量（HTTP_PROXY / HTTPS_PROXY）。'
-      else if (proxyConfigured) proxyShown = '已保存：' + proxyView.url + '（下一次工具调用立即使用）。'
-      else proxyShown = '未配置：使用自动检测（Windows 系统代理 → 启动环境变量）。'
+      if (proxyView.phase === 'loading') proxyShown = 'Reading settings…'
+      else if (proxyView.error) proxyShown = proxyView.error + ' Auto-detection remains active: Windows system proxy, startup environment variables (HTTP_PROXY / HTTPS_PROXY).'
+      else if (proxyConfigured) proxyShown = 'Configured: ' + proxyView.url + ' (used on next tool call).'
+      else proxyShown = 'Not configured: using auto-detection (Windows system proxy → startup environment variables).'
+
+      var proxyStatusStyle = proxyStatusKind === 'ok' ? S.statusOk : proxyStatusKind === 'bad' ? S.statusBad : S.status
+      var isReadOnly = proxyView.writable === false && proxyView.phase === 'ready'
+
       var proxyBlock = React.createElement('div', { style: S.infoBox },
         React.createElement('div', { style: S.infoHead },
-          React.createElement('p', { style: S.infoLabel }, '本地代理（可选）'),
-          proxyConfigured && proxyView.phase === 'ready'
-            ? React.createElement('button', { type: 'button', style: S.smallButton, onClick: onProxyClear, disabled: !proxyView.writable }, '清除')
+          React.createElement('p', { style: S.infoLabel }, 'Local Proxy (Optional)'),
+          proxyConfigured
+            ? React.createElement('button', { type: 'button', style: S.smallButton, onClick: onProxyClear, disabled: isReadOnly }, 'Clear')
             : null),
-        React.createElement('p', { style: S.note }, '代理软件只监听本地端口、没有开启系统代理时，自动检测找不到它——把它的地址填在这里即可（例如 http://127.0.0.1:7897）。支持 http:// 与 https://（可省略协议头）。'),
+        React.createElement('p', { style: S.note }, 'When proxy software only listens on a local port without enabling the system proxy, auto-detection cannot find it — enter its address here (e.g. http://127.0.0.1:7897). Supports http:// and https:// (scheme may be omitted).'),
         React.createElement('div', { style: S.row },
           React.createElement('input', {
             style: S.input,
             type: 'text',
-            value: proxyInput,
             placeholder: 'http://127.0.0.1:7897',
+            value: proxyInput,
             onChange: onProxyInput,
             autoComplete: 'off',
             spellCheck: false,
-            disabled: proxyView.phase !== 'ready' || !proxyView.writable,
+            disabled: isReadOnly,
           }),
           React.createElement('button', {
+            type: 'button',
             style: S.button,
             onClick: onProxySave,
-            disabled: proxyView.phase !== 'ready' || !proxyView.writable,
-          }, '保存')),
+            disabled: isReadOnly,
+          }, 'Save')),
         proxyStatus !== '' ? React.createElement('p', { style: proxyStatusStyle }, proxyStatus) : null,
         React.createElement('p', { style: S.note }, proxyShown),
-        proxyView.phase === 'ready' && !proxyView.writable
-          ? React.createElement('p', { style: S.note }, '当前环境只读（设置文档不可写），无法在此修改；可用环境变量 JINA_PROXY_URL 代替。')
+        isReadOnly
+          ? React.createElement('p', { style: S.note }, 'Current environment is read-only (settings document is not writable); configure via JINA_PROXY_URL environment variable instead.')
           : null)
 
-      // ---- key health block -------------------------------------------------
+      // Tool Options & Extraction Behavior Block
+      var toolsStatusStyle = toolsStatusKind === 'ok' ? S.statusOk : toolsStatusKind === 'bad' ? S.statusBad : S.status
+      var toolsOptionsBlock = React.createElement('div', { style: S.infoBox },
+        React.createElement('div', { style: S.infoHead },
+          React.createElement('p', { style: S.infoLabel }, 'Tool Defaults & Extraction Behavior'),
+          React.createElement('div', { style: { display: 'flex', gap: 8 } },
+            React.createElement('button', {
+              type: 'button',
+              style: S.ghostButton,
+              onClick: onResetTools,
+              disabled: isReadOnly,
+            }, 'Reset'),
+            React.createElement('button', {
+              type: 'button',
+              style: S.button,
+              onClick: onSaveTools,
+              disabled: isReadOnly,
+            }, 'Save Options'))),
+        React.createElement('p', { style: S.note }, 'Configure default behavior for jina_web_search, jina_read, jina_extract, and jina_chunk. Parameters specified directly by an agent in a tool call take precedence over these defaults.'),
+
+        // Preset Quick-Switcher Bar
+        React.createElement('div', { style: Object.assign({}, S.fieldGroup, { background: 'var(--dsw-alias-bg-layer-2, rgba(0,0,0,0.1))', padding: '10px 12px', borderRadius: 8, border: '1px solid var(--dsw-alias-border-l2, rgba(127,127,127,0.25))' }) },
+          React.createElement('div', { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8 } },
+            React.createElement('label', { style: Object.assign({}, S.fieldLabel, { fontSize: 13 }) }, '⚡ High-Leverage Extraction Preset:'),
+            React.createElement('select', {
+              style: Object.assign({}, S.formSelect, { width: 'auto', minWidth: 260, height: 32 }),
+              value: activePresetInput,
+              onChange: function (e) { applyPreset(e.target.value) },
+              disabled: isReadOnly,
+            },
+              React.createElement('option', { value: 'balanced' }, 'Balanced (Default: Coding, Docs & High Signal)'),
+              React.createElement('option', { value: 'research' }, 'Deep Academic Research (High Tokens & Vision)'),
+              React.createElement('option', { value: 'clean-read' }, 'Strict Clean Read (Aggressive Noise Stripping)'),
+              React.createElement('option', { value: 'fast-index' }, 'Fast Indexing (Token Efficient)'),
+              React.createElement('option', { value: 'spa-resilient' }, 'SPA & Dynamic JS (Wait for DOM hydration)'))),
+          React.createElement('p', { style: S.fieldHint }, 'Selecting a preset pre-configures CSS target/remove selectors, token caps, and wait timers optimized for specific tasks.')),
+
+        // Section 1: Search Defaults
+        React.createElement('div', { style: S.grid },
+          React.createElement('div', { style: S.fieldGroup },
+            React.createElement('label', { style: S.fieldLabel }, 'Search Result Count'),
+            React.createElement('input', {
+              style: S.formInput,
+              type: 'number',
+              min: 1,
+              max: 20,
+              value: searchNumInput,
+              onChange: function (e) {
+                toolsDirty.current = true
+                setSearchNumInput(e.target.value)
+              },
+              disabled: isReadOnly,
+            }),
+            React.createElement('p', { style: S.fieldHint }, 'Default result count for jina_web_search (1–20, default: 5).')),
+          React.createElement('div', { style: S.fieldGroup },
+            React.createElement('label', { style: S.fieldLabel }, 'Default Search / Crawl Engine'),
+            React.createElement('select', {
+              style: S.formSelect,
+              value: engineInput,
+              onChange: function (e) {
+                toolsDirty.current = true
+                setEngineInput(e.target.value)
+              },
+              disabled: isReadOnly,
+            },
+              React.createElement('option', { value: 'auto' }, 'Auto / Default (Fastest)'),
+              React.createElement('option', { value: 'google' }, 'Google (Comprehensive)'),
+              React.createElement('option', { value: 'bing' }, 'Bing'),
+              React.createElement('option', { value: 'reader' }, 'Reader Direct (r.jina.ai)'),
+              React.createElement('option', { value: 'cf-browser-rendering' }, 'Cloudflare Anti-Bot Bypass')),
+            React.createElement('p', { style: S.fieldHint }, 'cf-browser-rendering bypasses Cloudflare turnstile and bot protections.'))),
+
+        // Section 2: Reader & Extraction Defaults
+        React.createElement('div', { style: S.grid },
+          React.createElement('div', { style: S.fieldGroup },
+            React.createElement('label', { style: S.fieldLabel }, 'Token Budget Cap'),
+            React.createElement('input', {
+              style: S.formInput,
+              type: 'number',
+              placeholder: 'e.g. 8000 (empty = uncapped)',
+              value: tokenBudgetInput,
+              onChange: function (e) {
+                toolsDirty.current = true
+                setTokenBudgetInput(e.target.value)
+              },
+              disabled: isReadOnly,
+            }),
+            React.createElement('p', { style: S.fieldHint }, 'Hard token limit on extracted markdown to prevent context bloat.')),
+          React.createElement('div', { style: S.fieldGroup },
+            React.createElement('label', { style: S.fieldLabel }, 'Retain Images Policy'),
+            React.createElement('select', {
+              style: S.formSelect,
+              value: retainImagesInput,
+              onChange: function (e) {
+                toolsDirty.current = true
+                setRetainImagesInput(e.target.value)
+              },
+              disabled: isReadOnly,
+            },
+              React.createElement('option', { value: 'none' }, 'None (Fast, Text Only)'),
+              React.createElement('option', { value: 'all' }, 'All (Include Image Links)'),
+              React.createElement('option', { value: 'alt' }, 'Alt Text Only (Compact)')),
+            React.createElement('p', { style: S.fieldHint }, 'Controls how raster images are represented in extracted markdown.'))),
+
+        // Section 3: DOM Selectors & SPA Scraping
+        React.createElement('div', { style: S.grid },
+          React.createElement('div', { style: S.fieldGroup },
+            React.createElement('label', { style: S.fieldLabel }, 'Default Target CSS Selector'),
+            React.createElement('input', {
+              style: S.formInput,
+              type: 'text',
+              placeholder: 'e.g. article, .markdown-body, main',
+              value: targetSelectorInput,
+              onChange: function (e) {
+                toolsDirty.current = true
+                setTargetSelectorInput(e.target.value)
+              },
+              disabled: isReadOnly,
+            }),
+            React.createElement('p', { style: S.fieldHint }, 'CSS selector to isolate the main content and eliminate boilerplate.')),
+          React.createElement('div', { style: S.fieldGroup },
+            React.createElement('label', { style: S.fieldLabel }, 'Default Wait-For Selector (SPA)'),
+            React.createElement('input', {
+              style: S.formInput,
+              type: 'text',
+              placeholder: 'e.g. div#app, main, .content',
+              value: waitForSelectorInput,
+              onChange: function (e) {
+                toolsDirty.current = true
+                setWaitForSelectorInput(e.target.value)
+              },
+              disabled: isReadOnly,
+            }),
+            React.createElement('p', { style: S.fieldHint }, 'Pauses extraction until dynamic client-side JS renders this selector.')),
+          React.createElement('div', { style: S.fieldGroup },
+            React.createElement('label', { style: S.fieldLabel }, 'Default Remove Selector'),
+            React.createElement('input', {
+              style: S.formInput,
+              type: 'text',
+              placeholder: 'e.g. .cookie-banner, nav, footer, .ad',
+              value: removeSelectorInput,
+              onChange: function (e) {
+                toolsDirty.current = true
+                setRemoveSelectorInput(e.target.value)
+              },
+              disabled: isReadOnly,
+            }),
+            React.createElement('p', { style: S.fieldHint }, 'CSS elements to strip out prior to markdown conversion.'))),
+
+        // Section 4: Automations & Cache Toggle
+        React.createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: 8, marginTop: 4 } },
+          React.createElement('label', { style: Object.assign({}, S.note, { display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', fontWeight: 500, color: 'var(--dsw-alias-label-primary)' }) },
+            React.createElement('input', {
+              type: 'checkbox',
+              checked: autoBypassCfInput,
+              onChange: function (e) {
+                toolsDirty.current = true
+                setAutoBypassCfInput(e.target.checked)
+              },
+              disabled: isReadOnly,
+            }),
+            'Automated Cloudflare Turnstile Bypass (auto-retries with browser rendering on 403 / captcha challenge)'),
+          React.createElement('label', { style: Object.assign({}, S.note, { display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', fontWeight: 500, color: 'var(--dsw-alias-label-primary)' }) },
+            React.createElement('input', {
+              type: 'checkbox',
+              checked: noCacheInput,
+              onChange: function (e) {
+                toolsDirty.current = true
+                setNoCacheInput(e.target.checked)
+              },
+              disabled: isReadOnly,
+            }),
+            'Force fresh crawl by default (bypass Jina CDN cache)')),
+        toolsStatus !== '' ? React.createElement('p', { style: toolsStatusStyle }, toolsStatus) : null)
+
+      // Key health block
       var primerLines
       if (primer.phase === 'loading') {
-        primerLines = [React.createElement('p', { key: 'p', style: S.status }, '正在连接 Jina 检测 key…')]
+        primerLines = [React.createElement('p', { key: 'p', style: S.status }, 'Connecting to Jina to verify key…')]
       } else if (primer.phase === 'error') {
         primerLines = [
-          React.createElement('p', { key: 'e', style: S.statusBad }, '❌ 无法连接 Jina：' + String(primer.error)),
-          React.createElement('p', { key: 'h', style: S.note }, '先确认本地代理正在运行，且「本地代理」里填写的地址/端口与它一致（没有填写时请确认 VPN / 系统代理已开启或环境变量已设置），然后点击右侧「刷新」重试。'),
+          React.createElement('p', { key: 'e', style: S.statusBad }, '❌ Unable to connect to Jina: ' + String(primer.error)),
+          React.createElement('p', { key: 'h', style: S.note }, 'Verify that the local proxy is running and matches the configured address/port (if empty, verify VPN/system proxy is enabled or environment variables are set), then click "Refresh" on the right to retry.'),
         ]
       } else {
         var d = primer.data || {}
-        var balance = typeof d.balanceLeft === 'number' ? d.balanceLeft.toLocaleString('en-US') + ' credits' : '未知'
-        var kindLabel = d.keyFound === true
-          ? (d.keyKind === 'credential' ? '本页保存的 key' : 'key 文件（jina-api-key.txt）')
-          : '未检测到 key（Jina 匿名免费配额）'
+        var balance = typeof d.balanceLeft === 'number' ? d.balanceLeft.toLocaleString('en-US') + ' credits' : 'Unknown'
+        var kindLabel = d.hasKey
+          ? d.keyKind === 'credential' ? 'API key saved on this page' : 'Key file (jina-api-key.txt)'
+          : 'No key detected (Jina anonymous free tier)'
         primerLines = [
-          React.createElement('p', { key: 'ok', style: S.statusOk }, '✅ 连接正常，key 可用'),
-          React.createElement('p', { key: 'id', style: S.mono }, '身份：' + (d.authenticatedAs || '未知')),
-          React.createElement('p', { key: 'bal', style: S.mono }, '余额：' + balance),
-          React.createElement('p', { key: 'src', style: S.note }, '当前生效来源：' + kindLabel),
-        ]
+          React.createElement('p', { key: 's', style: S.statusOk }, '✅ Connected successfully, key is valid'),
+          d.authenticatedAs ? React.createElement('p', { key: 'i', style: S.note }, 'Identity: ' + d.authenticatedAs) : null,
+          React.createElement('p', { key: 'b', style: S.note }, 'Balance: ' + balance),
+          React.createElement('p', { key: 'k', style: S.note }, 'Active Source: ' + kindLabel),
+        ].filter(Boolean)
       }
-      // The probe reports which proxy it actually used — the one fact that
-      // tells a working manual address apart from a lucky environment variable.
-      var probe = primer.data && primer.data.proxy ? primer.data.proxy : undefined
-      var probeLines = []
-      if (probe !== undefined) {
-        var probeLabel = probe.url
-          ? probe.url + '（来源：' + String(PROXY_SOURCES[probe.source] || probe.source || '未知') + '）'
-          : '无（直连）'
-        probeLines.push(React.createElement('p', { key: 'proxy', style: S.mono }, '本次检测所用代理：' + probeLabel))
+
+      var probe = (primer.data && primer.data.proxy) || {}
+      var probeLabel = probe.source
+        ? probe.url
+          ? probe.url + ' (source: ' + String(PROXY_SOURCES[probe.source] || probe.source || 'Unknown') + ')'
+          : String(PROXY_SOURCES[probe.source] || probe.source)
+        : 'None (direct connection)'
+
+      var probeLines = [React.createElement('p', { key: 'pr', style: S.note }, 'Proxy used for this probe: ' + probeLabel)]
+      if (probe.rejected && probe.rejected.length > 0) {
+        var rejectReason = PROXY_REJECTS[probe.rejected[0].reason] || probe.rejected[0].reason
+        probeLines.push(React.createElement('p', { key: 'rj', style: S.statusBad }, '⚠️ Saved proxy "' + probe.rejected[0].value + '" is unusable (' + rejectReason + '); fell back to auto-detection.'))
       }
-      if (probe !== undefined && Array.isArray(probe.rejected) && probe.rejected.length > 0) {
-        var rejectReason = String(PROXY_REJECTS[probe.rejected[0].reason] || probe.rejected[0].reason)
-        probeLines.push(React.createElement('p', { key: 'rejected', style: S.statusBad }, '⚠️ 已保存的代理「' + probe.rejected[0].value + '」不可用（' + rejectReason + '），已回退到自动检测。'))
-      }
+
       var primerBlock = React.createElement('div', { style: S.infoBox },
         React.createElement('div', { style: S.infoHead },
-          React.createElement('p', { style: S.infoLabel }, 'API key / 连接检测'),
+          React.createElement('p', { style: S.infoLabel }, 'API Key / Connection Check'),
           React.createElement('button', {
             type: 'button',
             style: S.smallButton,
             onClick: loadPrimer,
             disabled: primer.phase === 'loading',
-          }, '刷新')),
+          }, 'Refresh')),
         primerLines,
         probeLines)
 
@@ -439,67 +842,116 @@ window.__ModuleLoader__.load({
           'aria-expanded': open,
           onClick: function () { setOpen(!open) },
         },
-          React.createElement('span', { style: S.headText },
-            React.createElement('span', { style: S.name }, 'Jina Tools'),
-            React.createElement('span', { style: S.description }, 'Jina AI 搜索/阅读/嵌入等工具的 API key 与本地代理。')),
+          React.createElement('div', { style: S.headText },
+            React.createElement('p', { style: S.name }, 'Jina Tools'),
+            React.createElement('span', { style: S.description }, 'API key and local proxy configuration for Jina AI search, reader, and embeddings tools.')),
           React.createElement(Chevron, { open: open })),
         open
           ? React.createElement('div', { style: S.body },
-            React.createElement('p', { style: S.note }, 'jina_web_search / jina_read 等工具会优先使用这里保存的 key。免费 key 可在 ', React.createElement('a', { style: S.link, href: 'https://jina.ai/?sui=apikey', target: '_blank', rel: 'noreferrer' }, 'jina.ai'), ' 获取。'),
+            React.createElement('p', { style: S.note }, 'Tools like jina_web_search and jina_read prioritize the key saved here. Free keys can be obtained at ', React.createElement('a', { style: S.link, href: 'https://jina.ai/?sui=apikey', target: '_blank', rel: 'noreferrer' }, 'jina.ai'), ' to get a key.'),
             React.createElement('div', { style: S.row },
               React.createElement('input', {
                 style: S.input,
                 type: 'password',
+                placeholder: 'Paste API key…',
                 value: input,
-                placeholder: '粘贴 API key…',
                 onChange: onInput,
                 autoComplete: 'off',
                 spellCheck: false,
-                disabled: view !== undefined && !writable,
+                disabled: !writable,
               }),
               React.createElement('button', {
+                type: 'button',
                 style: S.button,
                 onClick: onSave,
-                disabled: view !== undefined && !writable,
-              }, '保存'),
+                disabled: !writable,
+              }, 'Save'),
               configured
-                ? React.createElement('button', { style: S.ghostButton, onClick: onClear, disabled: !writable }, '清除')
+                ? React.createElement('button', { type: 'button', style: S.ghostButton, onClick: onClear, disabled: !writable }, 'Clear')
                 : null),
             status !== '' ? React.createElement('p', { style: statusStyle }, status) : null,
             React.createElement('p', { style: S.note }, shown),
+            toolsOptionsBlock,
             proxyBlock,
             primerBlock,
-            view !== undefined && !writable ? React.createElement('p', { style: S.note }, '当前环境只读：key 由环境变量等来源提供，无法在此修改。') : null,
-            React.createElement('p', { style: S.note }, 'key 解析顺序：1. 工具参数 apiKey；2. 本页保存的 key（credential 引用 ' + CRED + '，由 dsh 凭据存储持久化）；3. 会话工作区的 jina-api-key.txt；4. dsh 主目录下的 jina-api-key.txt。保存后立即生效。'),
-            React.createElement('p', { style: S.note }, '代理优先级：1. 本页「本地代理」保存的地址；2. 环境变量 JINA_PROXY_URL；3. Windows 系统代理（自动发现，端口变化会自愈）；4. 继承启动环境的 HTTP_PROXY / HTTPS_PROXY。只有 http(s) 代理可用于网络 helper。中国大陆网络环境下调用 Jina 需要代理；本地代理只监听端口、未开启系统代理时，请填上面的「本地代理」。'))
+            view !== undefined && !writable ? React.createElement('p', { style: S.note }, 'Current environment is read-only: key is provided via environment variables or file; cannot be modified here.') : null,
+            React.createElement('p', { style: S.note }, 'Key resolution order: 1. Tool argument apiKey; 2. Key saved on this page (credential reference ' + CRED + ', persisted in dsh credential store); 3. jina-api-key.txt in session workspace; 4. jina-api-key.txt in dsh home directory. Takes effect immediately after saving.'),
+            React.createElement('p', { style: S.note }, 'Proxy precedence: 1. Address saved in "Local Proxy" on this page; 2. JINA_PROXY_URL environment variable; 3. Windows system proxy (auto-discovered, self-heals across port changes); 4. Inherited startup environment HTTP_PROXY / HTTPS_PROXY. Only http(s) proxies can be used by the network helper. If local proxy software only listens on a port without enabling system proxy, enter it in "Local Proxy" above.'))
           : null)
     }
 
     exports.name = 'dsh-jina'
-    // Every Remote namespace the gateway mounts is its own cordis service, so a
-    // consumer that reads `remote.<ns>` must declare it here — the property
-    // access itself throws `cannot get property "remote.settings" without
-    // inject` otherwise (which crashes the settings slot entry and makes the
-    // card vanish). `remote.credentials` and `remote.settings` are read
-    // through properties below; `remote` itself carries `$on`.
-    exports.inject = ['slots', 'remote', 'remote.credentials', 'remote.settings']
+    exports.inject = ['slots', 'connection', 'remote']
 
     exports.apply = function (ctx) {
-      var slots = ctx.get('slots')
-      if (slots === undefined) return
-      var remote = ctx.get('remote')
-      if (remote === undefined) return
-      var credentials = ctx.get('remote.credentials')
-      // Standard plugin-configuration card slot (Settings → Plugins →
-      // Configure). `slots.inject` waits for the declarer package and
-      // unregisters automatically if the surface disappears. Keyed by the
-      // settings namespace this card edits — 'jina-tools' — which the host
-      // half serves; the tab dispatches one entry per served namespace.
+      var slots = ctx.slots
+
+      function getApi() {
+        var conn = typeof ctx.get === 'function' ? ctx.get('connection') : undefined
+        return conn && conn.api ? conn.api : undefined
+      }
+
+      function getCredentials() {
+        var api = getApi()
+        if (!api || !api.credentials) return undefined
+        return {
+          describe: function (refs) {
+            return api.credentials.describe({ refs: Array.isArray(refs) ? refs : [refs] }).then(function (res) {
+              if (res && res.result && res.result.ok) {
+                return { ok: true, value: res.result.value.credentials }
+              }
+              return { ok: false, error: res && res.result && res.result.error }
+            })
+          },
+          set: function (ref, value) {
+            return api.credentials.set({ ref: ref, value: value }).then(function (res) {
+              return { ok: Boolean(res && res.result && res.result.ok) }
+            })
+          },
+          unset: function (ref) {
+            return api.credentials.unset({ ref: ref }).then(function (res) {
+              return { ok: Boolean(res && res.result && res.result.ok) }
+            })
+          },
+        }
+      }
+
+      function getSettings() {
+        var api = getApi()
+        if (!api || !api.settings) return undefined
+        return {
+          describe: function () {
+            return api.settings.describe({}).then(function (res) {
+              if (res && res.result && res.result.ok) {
+                return { ok: true, value: res.result.value }
+              }
+              return { ok: false, error: res && res.result && res.result.error }
+            })
+          },
+          mutate: function (requestOrNs, ops, expectedRevision) {
+            var payload = typeof requestOrNs === 'string'
+              ? { ns: requestOrNs, ops: ops }
+              : requestOrNs
+            return api.settings.mutate(payload).then(function (res) {
+              if (res && res.result && res.result.ok) {
+                return { ok: true, value: res.result.value }
+              }
+              return { ok: false, error: res && res.result && res.result.error }
+            })
+          },
+        }
+      }
+
       ctx.slots.inject('settings.plugin.item', function () {
         return slots.register(
           { name: 'settings.plugin.item', key: 'jina-tools' },
           function (slotProps) {
-            return React.createElement(JinaCard, { remote: remote, credentials: credentials })
+            return React.createElement(JinaCard, {
+              ctx: ctx,
+              remote: typeof ctx.get === 'function' ? ctx.get('remote') : undefined,
+              getCredentials: getCredentials,
+              getSettings: getSettings,
+            })
           },
         )
       })

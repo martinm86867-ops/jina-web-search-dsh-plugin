@@ -33,7 +33,112 @@
 export const SETTINGS_NAMESPACE = 'jina-tools'
 
 /** Settings field holding the manually configured local proxy address. */
+/** Settings field holding the manually configured local proxy address. */
 export const PROXY_SETTING_FIELD = 'proxyUrl'
+
+// Tool customization fields for jina-tools settings namespace
+export const DEFAULT_SEARCH_NUM_FIELD = 'defaultSearchNum'
+export const DEFAULT_TOKEN_BUDGET_FIELD = 'defaultTokenBudget'
+export const DEFAULT_ENGINE_FIELD = 'defaultEngine'
+export const DEFAULT_RETAIN_IMAGES_FIELD = 'defaultRetainImages'
+export const DEFAULT_WAIT_FOR_SELECTOR_FIELD = 'defaultWaitForSelector'
+export const DEFAULT_TARGET_SELECTOR_FIELD = 'defaultTargetSelector'
+export const DEFAULT_REMOVE_SELECTOR_FIELD = 'defaultRemoveSelector'
+export const DEFAULT_NO_CACHE_FIELD = 'defaultNoCache'
+export const DEFAULT_PRESET_FIELD = 'defaultPreset'
+export const AUTO_BYPASS_CF_FIELD = 'autoBypassCloudflare'
+
+// Standard high-signal default selectors for web extraction
+export const DEFAULT_TARGET_SELECTORS = 'article, main, [role="main"], .markdown-body, .content, #content, .post-content, .article-body, .entry-content'
+export const DEFAULT_REMOVE_SELECTORS = 'header, footer, nav, [role="navigation"], .navbar, .cookie-banner, #cookie-banner, .consent-banner, .banner, .ads, .ad, .sidebar, #sidebar, .aside, .social-share, .comments, #comments'
+export const DEFAULT_WAIT_FOR_SELECTOR = 'article, main, [role="main"], #root, #app'
+
+export const EXTRACTION_PRESETS = {
+  balanced: {
+    label: 'Balanced (Default)',
+    description: 'High signal extraction for day-to-day coding, docs, and search.',
+    preset: 'agent',
+    defaultSearchNum: 5,
+    defaultTokenBudget: 8000,
+    defaultEngine: 'auto',
+    defaultRetainImages: 'none',
+    defaultTargetSelector: DEFAULT_TARGET_SELECTORS,
+    defaultRemoveSelector: DEFAULT_REMOVE_SELECTORS,
+    defaultWaitForSelector: '',
+    defaultNoCache: false,
+    autoBypassCloudflare: true,
+  },
+  research: {
+    label: 'Deep Research',
+    description: 'Academic and deep investigation with higher token budget and image descriptions.',
+    preset: 'research',
+    defaultSearchNum: 8,
+    defaultTokenBudget: 16000,
+    defaultEngine: 'auto',
+    defaultRetainImages: 'alt',
+    defaultTargetSelector: DEFAULT_TARGET_SELECTORS,
+    defaultRemoveSelector: DEFAULT_REMOVE_SELECTORS,
+    defaultWaitForSelector: '',
+    defaultNoCache: false,
+    autoBypassCloudflare: true,
+  },
+  'clean-read': {
+    label: 'Strict Clean Read (Aggressive Boilerplate Stripping)',
+    description: 'Removes all peripheral elements, sidebars, banners, and headers.',
+    preset: 'reader',
+    defaultSearchNum: 5,
+    defaultTokenBudget: 10000,
+    defaultEngine: 'auto',
+    defaultRetainImages: 'none',
+    defaultTargetSelector: 'article, main, [role="main"], .markdown-body',
+    defaultRemoveSelector: DEFAULT_REMOVE_SELECTORS + ', .menu, .breadcrumbs, .related-posts, .author-bio, .footer-nav',
+    defaultWaitForSelector: '',
+    defaultNoCache: false,
+    autoBypassCloudflare: true,
+  },
+  'fast-index': {
+    label: 'Fast Indexing (Token Efficient)',
+    description: 'Minimal token usage for rapid semantic search and multi-turn loops.',
+    preset: 'index',
+    defaultSearchNum: 4,
+    defaultTokenBudget: 4000,
+    defaultEngine: 'auto',
+    defaultRetainImages: 'none',
+    defaultTargetSelector: DEFAULT_TARGET_SELECTORS,
+    defaultRemoveSelector: DEFAULT_REMOVE_SELECTORS,
+    defaultWaitForSelector: '',
+    defaultNoCache: false,
+    autoBypassCloudflare: false,
+  },
+  'spa-resilient': {
+    label: 'SPA & Heavy JavaScript (Client-Side Rendered)',
+    description: 'Waits for client-side JavaScript execution (Next.js, Vue, React apps).',
+    preset: 'agent',
+    defaultSearchNum: 5,
+    defaultTokenBudget: 12000,
+    defaultEngine: 'browser',
+    defaultRetainImages: 'none',
+    defaultTargetSelector: DEFAULT_TARGET_SELECTORS,
+    defaultRemoveSelector: DEFAULT_REMOVE_SELECTORS,
+    defaultWaitForSelector: DEFAULT_WAIT_FOR_SELECTOR,
+    defaultNoCache: true,
+    autoBypassCloudflare: true,
+  },
+}
+
+
+export const SETTINGS_FIELDS = {
+  proxyUrl: PROXY_SETTING_FIELD,
+  defaultSearchNum: DEFAULT_SEARCH_NUM_FIELD,
+  defaultTokenBudget: DEFAULT_TOKEN_BUDGET_FIELD,
+  defaultEngine: DEFAULT_ENGINE_FIELD,
+  defaultRetainImages: DEFAULT_RETAIN_IMAGES_FIELD,
+  defaultWaitForSelector: DEFAULT_WAIT_FOR_SELECTOR_FIELD,
+  defaultTargetSelector: DEFAULT_TARGET_SELECTOR_FIELD,
+  defaultRemoveSelector: DEFAULT_REMOVE_SELECTOR_FIELD,
+  defaultNoCache: DEFAULT_NO_CACHE_FIELD,
+}
+
 
 /** Environment variable carrying a deployment-wide manual proxy address. */
 export const PROXY_ENV_VAR = 'JINA_PROXY_URL'
@@ -173,13 +278,72 @@ export function selectProxy(input) {
  *
  * @returns a schemastery-compatible schema node for the `jina-tools` namespace.
  */
+export function toolSettingsOf(section) {
+  if (section === null || typeof section !== 'object') {
+    return {
+      proxyUrl: '',
+      defaultPreset: 'agent',
+      defaultSearchNum: 5,
+      defaultTokenBudget: undefined,
+      defaultEngine: 'auto',
+      defaultRetainImages: 'none',
+      defaultWaitForSelector: '',
+      defaultTargetSelector: DEFAULT_TARGET_SELECTORS,
+      defaultRemoveSelector: DEFAULT_REMOVE_SELECTORS,
+      defaultNoCache: false,
+      autoBypassCloudflare: true,
+    }
+  }
+  const rawBudget = section.defaultTokenBudget
+  const parsedBudget = rawBudget !== undefined && rawBudget !== null && String(rawBudget).trim() !== '' && !isNaN(Number(rawBudget)) ? Number(rawBudget) : undefined
+  return {
+    proxyUrl: typeof section.proxyUrl === 'string' ? section.proxyUrl : '',
+    defaultPreset: typeof section.defaultPreset === 'string' && section.defaultPreset !== '' ? section.defaultPreset : 'agent',
+    defaultSearchNum: typeof section.defaultSearchNum === 'number' ? section.defaultSearchNum : 5,
+    defaultTokenBudget: parsedBudget,
+    defaultEngine: typeof section.defaultEngine === 'string' ? section.defaultEngine : 'auto',
+    defaultRetainImages: typeof section.defaultRetainImages === 'string' ? section.defaultRetainImages : 'none',
+    defaultWaitForSelector: typeof section.defaultWaitForSelector === 'string' ? section.defaultWaitForSelector : '',
+    defaultTargetSelector: typeof section.defaultTargetSelector === 'string' && section.defaultTargetSelector !== '' ? section.defaultTargetSelector : DEFAULT_TARGET_SELECTORS,
+    defaultRemoveSelector: typeof section.defaultRemoveSelector === 'string' && section.defaultRemoveSelector !== '' ? section.defaultRemoveSelector : DEFAULT_REMOVE_SELECTORS,
+    defaultNoCache: typeof section.defaultNoCache === 'boolean' ? section.defaultNoCache : false,
+    autoBypassCloudflare: typeof section.autoBypassCloudflare === 'boolean' ? section.autoBypassCloudflare : true,
+  }
+}
+
 export function createSettingsSchema() {
-  const dict = { [PROXY_SETTING_FIELD]: { type: 'string', meta: {} } }
-  const serialized = () => ({ type: 'object', dict: { [PROXY_SETTING_FIELD]: { type: 'string', meta: {} } } })
+  const dict = {
+    [PROXY_SETTING_FIELD]: { type: 'string', meta: {} },
+    defaultPreset: { type: 'string', meta: {} },
+    defaultSearchNum: { type: 'number', meta: {} },
+    defaultTokenBudget: { type: 'number', meta: {} },
+    defaultEngine: { type: 'string', meta: {} },
+    defaultRetainImages: { type: 'string', meta: {} },
+    defaultWaitForSelector: { type: 'string', meta: {} },
+    defaultTargetSelector: { type: 'string', meta: {} },
+    defaultRemoveSelector: { type: 'string', meta: {} },
+    defaultNoCache: { type: 'boolean', meta: {} },
+    autoBypassCloudflare: { type: 'boolean', meta: {} },
+  }
+  const serialized = () => ({ type: 'object', dict })
   const node = (value) => {
     const section = value !== null && typeof value === 'object' ? value : {}
-    const raw = proxySettingOf(section)
-    return raw === '' ? {} : { [PROXY_SETTING_FIELD]: raw }
+    const out = {}
+    if (typeof section.proxyUrl === 'string' && section.proxyUrl !== '') out.proxyUrl = section.proxyUrl
+    if (typeof section.defaultPreset === 'string' && section.defaultPreset !== '') out.defaultPreset = section.defaultPreset
+    if (typeof section.defaultSearchNum === 'number') out.defaultSearchNum = section.defaultSearchNum
+    if (section.defaultTokenBudget !== undefined && section.defaultTokenBudget !== null && String(section.defaultTokenBudget).trim() !== '') {
+      const num = Number(section.defaultTokenBudget)
+      if (!isNaN(num) && num > 0) out.defaultTokenBudget = num
+    }
+    if (typeof section.defaultEngine === 'string' && section.defaultEngine !== '') out.defaultEngine = section.defaultEngine
+    if (typeof section.defaultRetainImages === 'string' && section.defaultRetainImages !== '') out.defaultRetainImages = section.defaultRetainImages
+    if (typeof section.defaultWaitForSelector === 'string' && section.defaultWaitForSelector !== '') out.defaultWaitForSelector = section.defaultWaitForSelector
+    if (typeof section.defaultTargetSelector === 'string' && section.defaultTargetSelector !== '') out.defaultTargetSelector = section.defaultTargetSelector
+    if (typeof section.defaultRemoveSelector === 'string' && section.defaultRemoveSelector !== '') out.defaultRemoveSelector = section.defaultRemoveSelector
+    if (typeof section.defaultNoCache === 'boolean') out.defaultNoCache = section.defaultNoCache
+    if (typeof section.autoBypassCloudflare === 'boolean') out.autoBypassCloudflare = section.autoBypassCloudflare
+    return out
   }
   return Object.assign(node, {
     type: 'object',

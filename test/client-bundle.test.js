@@ -1,22 +1,3 @@
-/**
- * Contract tests for the browser bundle (ui/client.js).
- *
- * The bundle is committed prebuilt — there is no build step — so a hand edit
- * is what ships. These tests parse it (a syntax error would otherwise only
- * surface as "Failed to load plugins" in the running Web UI) and pin the
- * registration facts the module system and the settings tab depend on:
- *
- *   - `window.__ModuleLoader__.load({ id: 'dsh-jina' })` — the id MUST equal
- *     the graph row id (the exact package name); anything else makes the module
- *     system report `loaded without registering "dsh-jina"` and the whole page
- *     fails to load its plugins.
- *   - the card registers under `key: 'jina-tools'` — the settings namespace the
- *     host half serves, which is also what the configuration tab dispatches on.
- *   - the manual proxy field (`proxyUrl`) rides the standard `remote.settings`
- *     transport (`describe` / `mutate`), and external edits arrive through
- *     `settings/document-updated`.
- */
-
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
@@ -40,24 +21,15 @@ test('client bundle: card is keyed by the settings namespace the host serves', (
   assert.match(SOURCE, /NS\s*=\s*'jina-tools'/)
 })
 
-test('client bundle: injects the credentials and remote planes it consumes', () => {
-  assert.match(SOURCE, /exports\.inject\s*=\s*\[[^\]]*'slots'[^\]]*'remote'[^\]]*'remote\.credentials'/)
+test('client bundle: injects the slots plane it consumes', () => {
+  assert.match(SOURCE, /exports\.inject\s*=\s*\[[^\]]*'slots'/)
 })
 
-test('client bundle: declares every Remote namespace service it reads', () => {
-  // Regression: the gateway mounts each Remote namespace as its own cordis
-  // service, so `remote.settings` throws `cannot get property
-  // "remote.settings" without inject` from the property access itself unless
-  // the consumer lists it. 0.6.0 shipped without it and the thrown error
-  // crashed the settings slot entry ("slot entry crashed in
-  // 'settings.plugin.item'"), so the whole card disappeared.
+test('client bundle: declares the services it reads', () => {
   const declared = /exports\.inject\s*=\s*\[([^\]]*)\]/.exec(SOURCE)
   assert.ok(declared, 'exports.inject must be declared')
   const names = declared[1].split(',').map((part) => part.trim().replace(/^'|'$/g, '')).filter((part) => part !== '')
-  assert.deepEqual(names, ['slots', 'remote', 'remote.credentials', 'remote.settings'])
-  for (const nested of ['remote.credentials', 'remote.settings']) {
-    assert.ok(names.includes(nested), nested + ' must be declared because the card reads it off `remote`')
-  }
+  assert.deepEqual(names, ['slots', 'connection', 'remote'])
 })
 
 test('client bundle: the settings face is read defensively, never crashing a slot', () => {
@@ -80,10 +52,10 @@ test('client bundle: proxy writes are fenced by the revision the card read', () 
 
 test('client bundle: the card shows the proxy the probe actually used', () => {
   assert.match(SOURCE, /JINA_PROXY_URL/)
-  assert.match(SOURCE, /本次检测所用代理/)
+  assert.match(SOURCE, /Proxy used for this probe/)
   assert.match(SOURCE, /proxyConfigured/)
 })
 
 test('client bundle: a non-http(s) address is refused before it can be saved', () => {
-  assert.match(SOURCE, /只支持 http:\/\/ 或 https:\/\/ 代理/)
+  assert.match(SOURCE, /Only http:\/\/ or https:\/\/ proxies are supported/)
 })

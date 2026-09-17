@@ -10,15 +10,20 @@
 
 export const WEB_SEARCH_TOOL = {
   name: 'jina_web_search',
-  description: 'Search the web for current information via Jina, returning an optional summary plus a list of source URLs with official sources (government / company sites) ranked first. Use this whenever the user needs up-to-date web content or news — it supports time filters (last hour/day/week/month/year), region and language hints, and the images/blog domains. The built-in web_search is an alternative with broader general coverage when recency or official-source-first ranking does not matter. For academic papers, prefer jina_search_arxiv / jina_search_ssrn.',
+  description: 'Search the web for current information via Jina, returning an optional summary plus a list of source URLs with official sources (government / company sites) ranked first. Use this whenever the user needs up-to-date web content or news — it supports time filters (last hour/day/week/month/year), region and language hints, site/domain filters, filetype targeting, and the images/blog domains. The built-in web_search is an alternative with broader general coverage when recency or official-source-first ranking does not matter. For academic papers, prefer jina_search_arxiv / jina_search_ssrn.',
   parameters: {
     type: 'object',
     additionalProperties: false,
     properties: {
       query: { type: 'string', description: 'The search query. Pair it with the time parameter to narrow recency-sensitive searches (news, events, current info).' },
       type: { type: 'string', enum: ['web', 'arxiv', 'ssrn', 'images', 'blog'], description: 'Search domain. Default: web. For academic papers prefer the jina_search_arxiv / jina_search_ssrn tools.' },
-      num: { type: 'number', description: 'Number of results. Default: 5.' },
+      num: { type: 'number', description: 'Number of results. Default: 5 (or configured in Settings).' },
       time: { type: 'string', enum: ['h', 'd', 'w', 'm', 'y'], description: 'Only results from the last hour/day/week/month/year.' },
+      site: { type: 'string', description: 'Restrict search to a specific domain (e.g. site:github.com or docs.python.org).' },
+      filetype: { type: 'string', description: 'Filter by file type extension (e.g. pdf, doc, json, csv).' },
+      intitle: { type: 'string', description: 'Require term in search result title.' },
+      engine: { type: 'string', enum: ['google', 'bing', 'reader'], description: 'Search engine backend (default: google or configured in Settings).' },
+      nfpr: { type: 'boolean', description: 'Disable query auto-correction (exact verbatim search).' },
       location: { type: 'string', description: 'Location hint for search results.' },
       gl: { type: 'string', description: 'Country code, e.g. us, de, jp.' },
       hl: { type: 'string', description: 'Language code, e.g. en, zh-cn.' },

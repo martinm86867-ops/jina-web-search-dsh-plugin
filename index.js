@@ -43,7 +43,7 @@ import { homedir } from 'node:os'
 import { buildPrimer, formatPrimer, parseIpInfo, parseJinaRoot } from './primer.js'
 import {
   PROXY_ENV_VAR, SETTINGS_NAMESPACE,
-  createSettingsSchema, describeRejectReason, proxySettingOf, selectProxy,
+  createSettingsSchema, describeRejectReason, proxySettingOf, selectProxy, toolSettingsOf,
 } from './proxy.js'
 import { WEB_SEARCH_TOOL } from './tool-contracts.js'
 
@@ -93,6 +93,7 @@ export function apply(ctx) {
   const READER = 'https://r.jina.ai/'
   const IPINFO = 'https://ipinfo.io/json'
   const SEARCH = 'https://svip.jina.ai/'
+  const GROUND = 'https://g.jina.ai/'
   const API = 'https://api.jina.ai'
   const KEY_FILE = 'jina-api-key.txt'
   const CRED_REF = 'JINA_API_KEY'
@@ -616,23 +617,40 @@ export function apply(ctx) {
     render(_args, value) { return [{ type: 'text', text: value }] },
   }
 
+  function getActiveToolSettings() {
+    return settingsScope ? toolSettingsOf(settingsScope.get()) : {}
+  }
+
   /** Shared executor for the search tools (jina_web_search / jina_search_arxiv / jina_search_ssrn). */
   async function runSearch(args, exec, fixedType) {
     const signal = enterExec(exec)
-    const body = { q: String(args.query) }
+    const toolDefaults = getActiveToolSettings()
+    let query = String(args.query)
+    if (args.site) query += ' site:' + args.site
+    if (args.filetype) query += ' filetype:' + args.filetype
+    if (args.intitle) query += ' intitle:' + args.intitle
+
+    const body = { q: query }
     const t = fixedType || args.type
     if (t === 'arxiv') body.domain = 'arxiv'
     else if (t === 'ssrn') body.domain = 'ssrn'
     else if (t === 'images') body.type = 'images'
-    else if (t === 'blog') body.q = 'site:jina.ai/news ' + String(args.query)
+    else if (t === 'blog') body.q = 'site:jina.ai/news ' + query
     if (args.num !== undefined) body.num = args.num
+    else if (toolDefaults.defaultSearchNum !== undefined) body.num = toolDefaults.defaultSearchNum
     if (args.time) body.tbs = 'qdr:' + args.time
     if (args.location) body.location = args.location
     if (args.gl) body.gl = args.gl
     if (args.hl) body.hl = args.hl
+    if (args.nfpr) body.nfpr = true
+
+    const headers = { Accept: 'application/json', 'Content-Type': 'application/json' }
+    const engine = args.engine || toolDefaults.defaultEngine
+    if (engine) headers['X-Engine'] = engine
+
     const res = await callJina({
       url: SEARCH, method: 'POST',
-      headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
+      headers,
       body, timeoutMs: 60000, needsKey: true, apiKey: args.apiKey, signal,
     })
     if (!res.ok) return describeJinaError(res)
@@ -649,13 +667,14 @@ export function apply(ctx) {
 
   ctx.tools.register({
     name: 'jina_search_arxiv',
-    description: 'Search academic papers and preprints on arXiv via Jina. Use this whenever the user asks for computer science, machine learning, mathematics, physics or other quantitative research papers, surveys or preprints. Results are canonical arxiv.org paper links with accurate snippets.',
+    description: 'Search academic papers and preprints on arXiv via Jina. Use this whenever the user asks for computer science, machine learning, mathematics, physics or other quantitative research papers, surveys or preprints. Supports reading top paper full-text automatically.',
     parameters: {
       type: 'object',
       additionalProperties: false,
       properties: {
         query: { type: 'string', description: 'Search query: paper title, topic or keywords.' },
         num: { type: 'number', description: 'Number of results. Default: 5.' },
+        readFullText: { type: 'boolean', description: 'Automatically read the full text of the top matching arXiv paper in markdown (single-turn research).' },
         json: { type: 'boolean', description: 'Return the raw JSON response instead of formatted results.' },
         apiKey: { type: 'string', description: 'Optional Jina API key override.' },
       },
@@ -663,7 +682,25 @@ export function apply(ctx) {
     },
     output: OUT,
     async execute(args, exec) {
-      return runSearch(args, exec, 'arxiv')
+      const searchRes = await runSearch(args, exec, 'arxiv')
+      if (args.readFullText) {
+        const match = searchRes.match(/https:\/\/arxiv\.org\/(?:abs|pdf)\/([0-9]+\.[0-9]+(?:v[0-9]+)?)/i)
+        if (match) {
+          const arxivId = match[1]
+          const readUrl = 'https://arxiv.org/abs/' + arxivId
+          const toolDefaults = getActiveToolSettings()
+          const headers = { Accept: 'text/markdown', 'Content-Type': 'application/json' }
+          if (toolDefaults.defaultPreset) headers['X-Preset'] = toolDefaults.defaultPreset
+          const fullRes = await callJina({
+            url: READER, method: 'POST', headers,
+            body: { url: readUrl }, timeoutMs: 120000, needsKey: false, apiKey: args.apiKey, signal: enterExec(exec),
+          })
+          if (fullRes.ok) {
+            return `=== Search Results for "${args.query}" ===\n${searchRes}\n\n=== Full Paper Content (arXiv:${arxivId}) ===\n${fullRes.text}`
+          }
+        }
+      }
+      return searchRes
     },
   })
 
@@ -689,12 +726,19 @@ export function apply(ctx) {
 
   ctx.tools.register({
     name: 'jina_read',
-    description: 'Read a web page and extract clean markdown via Jina Reader (r.jina.ai), mirroring the jina-cli \'read\' command. Works without an API key (rate-limited); pass a key for higher limits. Use links/images to include link/image summaries.',
+    description: 'Read a web page and extract clean markdown via Jina Reader (r.jina.ai), mirroring the jina-cli \'read\' command. Supports CSS target selectors, SPA wait selectors, element removal, token budget caps, and Cloudflare anti-bot bypass. Configurable via DSH settings.',
     parameters: {
       type: 'object',
       additionalProperties: false,
       properties: {
         url: { type: 'string', description: 'Page URL, starting with http:// or https://.' },
+        targetSelector: { type: 'string', description: 'Target CSS selector to extract (e.g. article, .main-content). Overrides settings.' },
+        waitForSelector: { type: 'string', description: 'Wait until this CSS selector appears before extraction (for dynamic SPA pages). Overrides settings.' },
+        removeSelector: { type: 'string', description: 'CSS selector(s) to exclude from output (e.g. .cookie-banner, nav, footer). Overrides settings.' },
+        tokenBudget: { type: 'number', description: 'Maximum token count for the response. Overrides settings.' },
+        engine: { type: 'string', enum: ['auto', 'browser', 'curl', 'cf-browser-rendering'], description: 'Extraction engine: cf-browser-rendering bypasses Cloudflare turnstile. Overrides settings.' },
+        noCache: { type: 'boolean', description: 'Bypass Jina cache and force fresh crawl. Overrides settings.' },
+        withGeneratedAlt: { type: 'boolean', description: 'Generate AI alt-text for images lacking captions.' },
         links: { type: 'boolean', description: 'Include hyperlinks in the output.' },
         images: { type: 'boolean', description: 'Include image summaries in the output.' },
         json: { type: 'boolean', description: 'Return the raw JSON response instead of markdown.' },
@@ -706,17 +750,104 @@ export function apply(ctx) {
     async execute(args, exec) {
       const signal = enterExec(exec)
       if (!/^https?:\/\//i.test(String(args.url))) return 'invalid url: ' + args.url + ' (must start with http:// or https://)'
+      const toolDefaults = getActiveToolSettings()
       const headers = {
         Accept: args.json ? 'application/json' : 'text/markdown',
         'Content-Type': 'application/json',
         'X-Md-Link-Style': 'discarded',
       }
       if (args.links) headers['X-With-Links-Summary'] = 'all'
+      
+      const retainImages = toolDefaults.defaultRetainImages || (args.images ? 'all' : 'none')
+      headers['X-Retain-Images'] = retainImages
       if (args.images) headers['X-With-Images-Summary'] = 'true'
-      else headers['X-Retain-Images'] = 'none'
-      const res = await callJina({
+      if (args.withGeneratedAlt) headers['X-With-Generated-Alt'] = 'true'
+
+      const targetSel = args.targetSelector || toolDefaults.defaultTargetSelector
+      if (targetSel) headers['X-Target-Selector'] = targetSel
+
+      const waitSel = args.waitForSelector || toolDefaults.defaultWaitForSelector
+      if (waitSel) headers['X-Wait-For-Selector'] = waitSel
+
+      const removeSel = args.removeSelector || toolDefaults.defaultRemoveSelector
+      if (removeSel) headers['X-Remove-Selector'] = removeSel
+
+      const tokenBudget = args.tokenBudget || toolDefaults.defaultTokenBudget
+      if (tokenBudget) headers['X-Token-Budget'] = String(tokenBudget)
+
+      const engine = args.engine || toolDefaults.defaultEngine
+      if (engine) headers['X-Engine'] = engine
+
+      const noCache = args.noCache !== undefined ? args.noCache : toolDefaults.defaultNoCache
+      if (noCache) headers['X-No-Cache'] = 'true'
+
+      if (toolDefaults.defaultPreset) headers['X-Preset'] = toolDefaults.defaultPreset
+
+      let res = await callJina({
         url: READER, method: 'POST', headers,
         body: { url: String(args.url) }, timeoutMs: 120000, needsKey: false, apiKey: args.apiKey, signal,
+      })
+
+      // Cloudflare Auto-Bypass Automation:
+      // If request blocked by Cloudflare (403, 503, or CF challenge signature) and cf-browser-rendering wasn't already used
+      if (!res.ok && toolDefaults.autoBypassCloudflare && headers['X-Engine'] !== 'cf-browser-rendering') {
+        const text = String(res.text || '')
+        const isCloudflare = res.status === 403 || res.status === 503 || text.includes('Cloudflare') || text.includes('cf-chl') || text.includes('turnstile') || text.includes('Attention Required')
+        if (isCloudflare) {
+          const retryHeaders = Object.assign({}, headers, { 'X-Engine': 'cf-browser-rendering' })
+          const retryRes = await callJina({
+            url: READER, method: 'POST', headers: retryHeaders,
+            body: { url: String(args.url) }, timeoutMs: 120000, needsKey: true, apiKey: args.apiKey, signal,
+          })
+          if (retryRes.ok) return retryRes.text
+        }
+      }
+
+      if (!res.ok) return describeJinaError(res)
+      return res.text
+    },
+  })
+
+  ctx.tools.register({
+    name: 'jina_extract',
+    description: 'Extract structured JSON data matching a user-provided JSON Schema directly from any web page using Jina ReaderLM. Server-side extraction eliminates prompt token bloat by returning only the structured object.',
+    parameters: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        url: { type: 'string', description: 'Page URL, starting with http:// or https://.' },
+        instruction: { type: 'string', description: 'Extraction guidance (e.g. "Extract product pricing, specifications, and warranty info").' },
+        schema: { type: 'object', description: 'Target JSON Schema describing the desired output format.' },
+        targetSelector: { type: 'string', description: 'Optional CSS selector to scope extraction (e.g. article, .main).' },
+        waitForSelector: { type: 'string', description: 'Optional CSS selector to wait for before extraction.' },
+        apiKey: { type: 'string', description: 'Optional Jina API key override.' },
+      },
+      required: ['url', 'instruction', 'schema'],
+    },
+    output: OUT,
+    async execute(args, exec) {
+      const signal = enterExec(exec)
+      if (!/^https?:\/\//i.test(String(args.url))) return 'invalid url: ' + args.url + ' (must start with http:// or https://)'
+      const toolDefaults = getActiveToolSettings()
+      const headers = {
+        Accept: 'application/json',
+        'Content-Type': 'application/json',
+      }
+      const targetSel = args.targetSelector || toolDefaults.defaultTargetSelector
+      if (targetSel) headers['X-Target-Selector'] = targetSel
+      const waitSel = args.waitForSelector || toolDefaults.defaultWaitForSelector
+      if (waitSel) headers['X-Wait-For-Selector'] = waitSel
+      const engine = toolDefaults.defaultEngine
+      if (engine) headers['X-Engine'] = engine
+
+      const body = {
+        url: String(args.url),
+        instruction: String(args.instruction),
+        jsonSchema: args.schema,
+      }
+      const res = await callJina({
+        url: READER, method: 'POST', headers,
+        body, timeoutMs: 120000, needsKey: true, apiKey: args.apiKey, signal,
       })
       if (!res.ok) return describeJinaError(res)
       return res.text
@@ -724,8 +855,95 @@ export function apply(ctx) {
   })
 
   ctx.tools.register({
+    name: 'jina_chunk',
+    description: 'Chunk large web documents or specifications into semantic markdown sections via Jina Reader. Prevents context overflow on massive documents by returning clean segmented blocks.',
+    parameters: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        url: { type: 'string', description: 'Page URL, starting with http:// or https://.' },
+        chunkBy: { type: 'string', enum: ['h1', 'h2', 'h3', 'h4', 'h5', 'structured'], description: 'Semantic chunk boundary. Default: h2.' },
+        targetSelector: { type: 'string', description: 'Target CSS selector to extract before chunking.' },
+        tokenBudget: { type: 'number', description: 'Max token budget for the entire document.' },
+        apiKey: { type: 'string', description: 'Optional Jina API key override.' },
+      },
+      required: ['url'],
+    },
+    output: OUT,
+    async execute(args, exec) {
+      const signal = enterExec(exec)
+      if (!/^https?:\/\//i.test(String(args.url))) return 'invalid url: ' + args.url + ' (must start with http:// or https://)'
+      const toolDefaults = getActiveToolSettings()
+      const headers = {
+        Accept: 'application/json',
+        'Content-Type': 'application/json',
+        'X-Markdown-Chunking': args.chunkBy || 'h2',
+      }
+      const targetSel = args.targetSelector || toolDefaults.defaultTargetSelector
+      if (targetSel) headers['X-Target-Selector'] = targetSel
+      const tokenBudget = args.tokenBudget || toolDefaults.defaultTokenBudget
+      if (tokenBudget) headers['X-Token-Budget'] = String(tokenBudget)
+
+      if (toolDefaults.defaultPreset) headers['X-Preset'] = toolDefaults.defaultPreset
+
+      let res = await callJina({
+        url: READER, method: 'POST', headers,
+        body: { url: String(args.url) }, timeoutMs: 120000, needsKey: false, apiKey: args.apiKey, signal,
+      })
+
+      // Cloudflare Auto-Bypass Automation:
+      // If request blocked by Cloudflare (403, 503, or CF challenge signature) and cf-browser-rendering wasn't already used
+      if (!res.ok && toolDefaults.autoBypassCloudflare && headers['X-Engine'] !== 'cf-browser-rendering') {
+        const text = String(res.text || '')
+        const isCloudflare = res.status === 403 || res.status === 503 || text.includes('Cloudflare') || text.includes('cf-chl') || text.includes('turnstile') || text.includes('Attention Required')
+        if (isCloudflare) {
+          const retryHeaders = Object.assign({}, headers, { 'X-Engine': 'cf-browser-rendering' })
+          const retryRes = await callJina({
+            url: READER, method: 'POST', headers: retryHeaders,
+            body: { url: String(args.url) }, timeoutMs: 120000, needsKey: true, apiKey: args.apiKey, signal,
+          })
+          if (retryRes.ok) return retryRes.text
+        }
+      }
+
+      if (!res.ok) return describeJinaError(res)
+      return res.text
+    },
+  })
+
+  ctx.tools.register({
+    name: 'jina_search_batch',
+    description: 'Execute multiple web search queries in parallel via Jina Search, resolving multiple research vectors in a single turn. Returns grouped results for 1 to 5 queries.',
+    parameters: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        queries: {
+          type: 'array',
+          items: { type: 'string' },
+          description: '1 to 5 search queries to execute concurrently.',
+        },
+        time: { type: 'string', enum: ['h', 'd', 'w', 'm', 'y'], description: 'Only results from the last hour/day/week/month/year.' },
+        gl: { type: 'string', description: 'Country code, e.g. us, de, jp.' },
+        hl: { type: 'string', description: 'Language code, e.g. en, zh-cn.' },
+        apiKey: { type: 'string', description: 'Optional Jina API key override.' },
+      },
+      required: ['queries'],
+    },
+    output: OUT,
+    async execute(args, exec) {
+      const queries = Array.isArray(args.queries) ? args.queries.filter(q => typeof q === 'string' && q.trim() !== '') : []
+      if (queries.length === 0) return 'provide at least one non-empty query in the queries array'
+      const limited = queries.slice(0, 5)
+      const results = await Promise.all(limited.map(q => runSearch({ ...args, query: q }, exec)))
+      const sections = limited.map((q, idx) => `=== Search Query [${idx + 1}/${limited.length}]: "${q}" ===\n${results[idx]}`)
+      return sections.join('\n\n')
+    },
+  })
+
+  ctx.tools.register({
     name: 'jina_screenshot',
-    description: 'Capture a screenshot of a web page via Jina (r.jina.ai), mirroring the jina-cli \'screenshot\' command. Returns the hosted screenshot URL.',
+    description: 'Capture a screenshot of a web page via Jina (r.jina.ai), mirroring the jina-cli \'screenshot\' command. Automatically saves captured images into DSH attachments store when available for multimodal models.',
     parameters: {
       type: 'object',
       additionalProperties: false,
@@ -746,7 +964,31 @@ export function apply(ctx) {
         body: { url: String(args.url) }, timeoutMs: 120000, needsKey: true, apiKey: args.apiKey, signal,
       })
       if (!res.ok) return describeJinaError(res)
-      return fmtScreenshot(res.text)
+      let out = fmtScreenshot(res.text)
+
+      // Attachments Store Integration:
+      // If DSH attachments service is mounted, save the image so multimodal agents can view the raster
+      const attachments = ctx.get('attachments')
+      if (attachments && typeof attachments.saveImage === 'function') {
+        try {
+          const parsed = JSON.parse(res.text)
+          const d = parsed && typeof parsed === 'object' ? (parsed.data || parsed) : parsed
+          const b64 = d && (d.screenshot || d.image)
+          if (typeof b64 === 'string' && b64.length > 0) {
+            const cleanB64 = b64.replace(/^data:image\/[a-z]+;base64,/i, '')
+            const buffer = Buffer.from(cleanB64, 'base64')
+            const ref = await attachments.saveImage({
+              data: new Uint8Array(buffer),
+              mediaType: 'image/png',
+              name: 'screenshot-' + Date.now() + '.png',
+            })
+            if (ref && ref.attachmentId) {
+              out += `\n[DSH Attachment Saved]: ID=${ref.attachmentId} (${ref.width}x${ref.height}px)`
+            }
+          }
+        } catch (e) { /* non-fatal attachment save */ }
+      }
+      return out
     },
   })
 
@@ -895,7 +1137,7 @@ export function apply(ctx) {
 
   ctx.tools.register({
     name: 'jina_pdf',
-    description: 'Extract figures, tables and equations from a PDF via Jina (extract-pdf), mirroring the jina-cli \'pdf\' command. Provide either url or arxivId.',
+    description: 'Extract figures, tables, and equations from a PDF via Jina. Supports OCR presets, LaTeX math formatting, and markdown table alignment.',
     parameters: {
       type: 'object',
       additionalProperties: false,
@@ -903,6 +1145,9 @@ export function apply(ctx) {
         url: { type: 'string', description: 'PDF URL (https).' },
         arxivId: { type: 'string', description: 'arXiv paper ID shorthand, e.g. 2301.12345.' },
         extractType: { type: 'string', description: 'Filter by type: figure, table, equation (comma-separated).' },
+        preset: { type: 'string', enum: ['ocr', 'ocr+', 'ocr++', 'pdf', 'pdf+', 'pdf++'], description: 'OCR preset tuning. ocr++ handles scanned documents with high accuracy.' },
+        inlineFormula: { type: 'boolean', description: 'Convert inline math notation to standard LaTeX blocks.' },
+        table: { type: 'boolean', description: 'Format grid tabular content as markdown tables. Default: true.' },
         maxEdge: { type: 'number', description: 'Max pixel size for extracted images. Default: 1024.' },
         json: { type: 'boolean', description: 'Return the raw JSON response instead of formatted output.' },
         apiKey: { type: 'string', description: 'Optional Jina API key override.' },
@@ -916,13 +1161,122 @@ export function apply(ctx) {
       else if (args.url) body.url = String(args.url)
       else return 'provide either url or arxivId (jina pdf URL_OR_ARXIV_ID)'
       if (args.extractType) body.type = args.extractType
+
+      const headers = { 'Content-Type': 'application/json' }
+      if (args.preset) headers['X-Preset'] = args.preset
+      if (args.inlineFormula !== undefined) headers['X-Inline-Formula'] = String(args.inlineFormula)
+      if (args.table !== undefined) headers['X-Table'] = String(args.table)
+
       const res = await callJina({
         url: SEARCH + 'extract-pdf', method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         body, timeoutMs: 120000, needsKey: true, apiKey: args.apiKey, signal,
       })
       if (!res.ok) return describeJinaError(res)
       return fmtPdf(res.text, args.json === true)
+    },
+  })
+
+  ctx.tools.register({
+    name: 'jina_read_file',
+    description: 'Read and extract markdown with OCR from a local workspace file (PDF, HTML, text, or image) via Jina Reader. Enables high-accuracy document and equation extraction on local repository files without public hosting.',
+    parameters: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        filePath: { type: 'string', description: 'Path to local file relative to workspace or absolute path.' },
+        targetSelector: { type: 'string', description: 'Target CSS selector to extract (for HTML files).' },
+        tokenBudget: { type: 'number', description: 'Maximum tokens to return.' },
+        apiKey: { type: 'string', description: 'Optional Jina API key override.' },
+      },
+      required: ['filePath'],
+    },
+    output: OUT,
+    async execute(args, exec) {
+      const signal = enterExec(exec)
+      const pathStr = String(args.filePath)
+      let buffer
+      try {
+        if (ctx.fs && typeof ctx.fs.readFile === 'function') {
+          buffer = await ctx.fs.readFile(pathStr)
+        } else {
+          const nodeFs = await import('node:fs/promises')
+          buffer = await nodeFs.readFile(pathStr)
+        }
+      } catch (err) {
+        return 'failed to read local file "' + pathStr + '": ' + (err.message || String(err))
+      }
+
+      const b64 = Buffer.isBuffer(buffer) ? buffer.toString('base64') : Buffer.from(buffer).toString('base64')
+      const ext = pathStr.split('.').pop().toLowerCase()
+      const toolDefaults = getActiveToolSettings()
+
+      const headers = {
+        Accept: 'text/markdown',
+        'Content-Type': 'application/json',
+      }
+      if (toolDefaults.defaultPreset) headers['X-Preset'] = toolDefaults.defaultPreset
+      if (args.targetSelector) headers['X-Target-Selector'] = args.targetSelector
+      const tokenBudget = args.tokenBudget || toolDefaults.defaultTokenBudget
+      if (tokenBudget) headers['X-Token-Budget'] = String(tokenBudget)
+
+      const body = {
+        file: b64,
+        filename: pathStr.split('/').pop(),
+        extension: ext,
+      }
+      if (ext === 'pdf') body.pdf = b64
+
+      const res = await callJina({
+        url: READER, method: 'POST', headers,
+        body, timeoutMs: 120000, needsKey: true, apiKey: args.apiKey, signal,
+      })
+      if (!res.ok) return describeJinaError(res)
+      return res.text
+    },
+  })
+
+  ctx.tools.register({
+    name: 'jina_fact_check',
+    description: 'Verify the truthfulness and factual consistency of a statement or claim against current web evidence via Jina Grounding. Returns verification verdict, factual confidence score, and authoritative references.',
+    parameters: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        statement: { type: 'string', description: 'The factual claim, technical assertion, or user statement to verify.' },
+        apiKey: { type: 'string', description: 'Optional Jina API key override.' },
+      },
+      required: ['statement'],
+    },
+    output: OUT,
+    async execute(args, exec) {
+      const signal = enterExec(exec)
+      const statement = String(args.statement)
+      const res = await callJina({
+        url: GROUND, method: 'POST',
+        headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
+        body: { statement }, timeoutMs: 60000, needsKey: true, apiKey: args.apiKey, signal,
+      })
+      if (!res.ok) return describeJinaError(res)
+      try {
+        const data = JSON.parse(res.text)
+        const d = data && typeof data === 'object' ? (data.data || data) : data
+        if (d && typeof d === 'object') {
+          const lines = []
+          if (d.factuality !== undefined) lines.push(`Factuality Score: ${(Number(d.factuality) * 100).toFixed(1)}%`)
+          if (d.result !== undefined) lines.push(`Verdict: ${d.result}`)
+          if (d.reason) lines.push(`Reasoning: ${d.reason}`)
+          if (Array.isArray(d.references) && d.references.length > 0) {
+            lines.push('\nReferences & Evidence:')
+            d.references.slice(0, 5).forEach((ref, idx) => {
+              lines.push(`  [${idx + 1}] ${ref.title || ref.url} (${ref.url})`)
+              if (ref.keyQuote) lines.push(`      Quote: "${ref.keyQuote}"`)
+            })
+          }
+          if (lines.length > 0) return lines.join('\n')
+        }
+      } catch (e) { /* fall through */ }
+      return res.text
     },
   })
 
@@ -1037,10 +1391,41 @@ export function apply(ctx) {
 
   ctx.inject(['settings'], (sctx) => {
     try {
-      settingsScope = sctx.settings.register(settingsNamespace(SETTINGS_NAMESPACE), createSettingsSchema())
+      settingsScope = sctx.settings.register(settingsNamespace(SETTINGS_NAMESPACE), createSettingsSchema(), {
+        base: {
+          defaultSearchNum: 5,
+          defaultEngine: 'auto',
+          defaultRetainImages: 'none',
+          defaultNoCache: false,
+        },
+      })
     } catch (err) {
       settingsDiag = String((err && err.message) || err)
       settingsScope = undefined
     }
   })
+
+  // ---- system prompt guidance section (band 110) ---------------------------
+  // Injects optimal operational guidance into the agent system prompt when
+  // systemPrompt service is available (standard non-complete presets).
+  ctx.inject(['systemPrompt'], (pctx) => {
+    try {
+      pctx.systemPrompt.section({
+        name: 'tool:jina-suite',
+        order: 110,
+        text: [
+          '# Jina AI Web Intelligence Suite Guidance',
+          'You have access to 16 specialized Jina AI tools. Follow these rules for maximum efficiency:',
+          '- Parallel search: NEVER run serial turn-by-turn searches. Use jina_search_batch({ queries: [...] }) to resolve up to 5 research vectors in a single turn.',
+          '- Structured extraction: When extracting specific fields from articles/docs, DO NOT dump raw markdown into context. Use jina_extract({ url, instruction, schema }) to return compact, validated JSON.',
+          '- Long documents: Use jina_chunk({ url, chunkBy: "h2" }) on massive RFCs or manuals to avoid context overflow.',
+          '- Local files: Use jina_read_file({ filePath }) to extract text and LaTeX formulas from local workspace PDFs or HTML mockups.',
+          '- Visual verification: jina_screenshot automatically saves full-page PNGs into the session AttachmentStore for multimodal inspection.',
+          '- Truth verification: Use jina_fact_check({ statement }) to verify contentious claims against live web evidence.',
+          '- Academic research: Use jina_search_arxiv({ query, readFullText: true }) to discover and read full papers in one turn.',
+        ].join('\n'),
+      })
+    } catch (err) { /* non-fatal prompt section registration */ }
+  })
+
 }
