@@ -16,4 +16,4 @@
 # reads per operation. This patch itself defines no settings.
 - insert:
     - id: jina-tools
-      name: @martinm86867-ops/dsh-jina
+      name: '@martinm86867-ops/dsh-jina'
