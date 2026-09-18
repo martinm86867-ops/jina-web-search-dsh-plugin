@@ -40,6 +40,7 @@
  */
 
 import { homedir } from 'node:os'
+import { resolve, isAbsolute } from 'node:path'
 import { buildPrimer, formatPrimer, parseIpInfo, parseJinaRoot } from './primer.js'
 import {
   PROXY_ENV_VAR, SETTINGS_NAMESPACE,
@@ -322,12 +323,17 @@ export function apply(ctx) {
 
   /** What the transport actually ran through. */
   function effectiveProxyHint(proxy) {
-    if (proxy.source === 'setting') return '当前使用设置卡片（Jina Tools → 本地代理地址）里配置的代理 ' + proxy.url + '；请确认该本地代理正在运行、地址与端口正确（不需要时可在卡片中「清除」以回到自动检测）。'
-    if (proxy.source === 'envVar') return '当前使用环境变量 ' + PROXY_ENV_VAR + '=' + proxy.url + '。'
-    if (proxy.source === 'system') return '当前使用从 Windows 系统代理自动发现的 ' + proxy.url + '。'
-    if (proxy.source === 'request') return '当前使用调用级指定的代理 ' + proxy.url + '。'
-    if (proxy.source === 'environment') return '当前继承启动环境里的代理设置（HTTP_PROXY/HTTPS_PROXY）。'
-    return '未检测到可用代理：Windows 系统代理未开启、启动环境没有 HTTP_PROXY/HTTPS_PROXY、设置卡片也没有填写本地代理地址。若你使用只监听本地端口的代理软件（如 Clash/v2ray），请在设置卡片的「本地代理地址」里填写它的地址（例如 http://127.0.0.1:7897）。'
+    if (proxy.source === 'setting') return 'Currently using proxy from settings (Jina Tools → local proxy / 本地代理): ' + proxy.url + '. Check that this proxy is running, or clear (清除) it in the settings card to resume auto-detection.'
+    if (proxy.source === 'envVar') return 'Currently using environment proxy ' + PROXY_ENV_VAR + '=' + proxy.url + '.'
+    if (proxy.source === 'system') {
+      const isWin = typeof process !== 'undefined' && process.platform === 'win32'
+      return 'Currently using auto-discovered ' + (isWin ? 'Windows ' : '') + 'system proxy: ' + proxy.url + '.'
+    }
+    if (proxy.source === 'request') return 'Currently using call-specified proxy: ' + proxy.url + '.'
+    if (proxy.source === 'environment') return 'Currently inheriting proxy settings from startup environment (HTTP_PROXY/HTTPS_PROXY).'
+    const isWin = typeof process !== 'undefined' && process.platform === 'win32'
+    const sysMsg = isWin ? 'Windows system proxy not enabled' : 'System proxy not configured'
+    return 'No usable proxy detected (未检测到可用代理): ' + sysMsg + ', no HTTP_PROXY/HTTPS_PROXY in environment, and no local proxy in settings card. If using a local proxy (e.g. Clash/v2ray/Surge), configure its address in Jina Tools settings (e.g. http://127.0.0.1:7897).'
   }
 
   /** Plain-language account of the proxy a request ran through. */
@@ -336,9 +342,9 @@ export function apply(ctx) {
     const rejected = Array.isArray(proxy.rejected) ? proxy.rejected[0] : undefined
     if (rejected === undefined) return effectiveProxyHint(proxy)
     const where = rejected.field === 'envVar'
-      ? '环境变量 ' + PROXY_ENV_VAR + ' 配置的代理'
-      : rejected.field === 'request' ? '调用级指定的代理' : '设置卡片里配置的代理'
-    return where + '「' + rejected.value + '」不可用（' + describeRejectReason(rejected.reason) + '），已回退到自动检测。' + effectiveProxyHint(proxy)
+      ? 'Environment variable ' + PROXY_ENV_VAR
+      : rejected.field === 'request' ? 'Call-specified proxy' : 'Settings card proxy'
+    return where + ' "' + rejected.value + '" is unavailable (' + describeRejectReason(rejected.reason) + '), fallen back to auto-detection (已回退到自动检测). ' + effectiveProxyHint(proxy)
   }
 
   /** One HTTP call through the node helper. */
@@ -469,13 +475,30 @@ export function apply(ctx) {
     return (exec && exec.signal) || undefined
   }
 
+  function extractUsageFooter(text) {
+    if (!text) return ''
+    try {
+      const data = typeof text === 'string' ? JSON.parse(text) : text
+      const usage = (data && data.usage) || (data && data.data && data.data.usage) || (data && data.meta && data.meta.usage)
+      if (usage && typeof usage === 'object') {
+        const parts = []
+        if (usage.tokens !== undefined) parts.push('tokens=' + usage.tokens)
+        else if (usage.total_tokens !== undefined) parts.push('total_tokens=' + usage.total_tokens)
+        else if (usage.outputTokens !== undefined) parts.push('output_tokens=' + usage.outputTokens)
+        if (usage.prompt_tokens !== undefined) parts.push('prompt_tokens=' + usage.prompt_tokens)
+        if (parts.length > 0) return '\n\n[Usage: ' + parts.join(', ') + ']'
+      }
+    } catch (e) {}
+    return ''
+  }
+
   function fmtSearch(text, asJson) {
     if (asJson) return text
     let data
     try { data = JSON.parse(text) } catch (e) { return text }
     const results = data && Array.isArray(data.results) ? data.results : undefined
     if (results === undefined) return text
-    if (results.length === 0) return '(no results)'
+    if (results.length === 0) return '(no results)' + extractUsageFooter(text)
     const lines = []
     for (const r of results) {
       if (r && typeof r === 'object') {
@@ -487,7 +510,7 @@ export function apply(ctx) {
       }
       lines.push('')
     }
-    return lines.join('\n').trim()
+    return lines.join('\n').trim() + extractUsageFooter(text)
   }
 
   function fmtDatetime(text, asJson) {
@@ -503,14 +526,17 @@ export function apply(ctx) {
         const mk = d.metadata && typeof d.metadata === 'object' ? d.metadata : {}
         for (const k of ['publishedTime', 'article:published_time', 'bytedance:published_time', 'article:modified_time', 'bytedance:updated_time']) {
           const v = typeof mk[k] === 'string' ? mk[k] : (typeof d[k] === 'string' ? d[k] : undefined)
-          if (v !== undefined && v.length > 0) times.push(k + ': ' + v)
+          if (v !== undefined && v.length > 0) {
+            const label = k === 'publishedTime' || k.includes('published') ? `${k} (estimated publication)` : `${k} (last modified)`
+            times.push(label + ': ' + v)
+          }
         }
         if (times.length > 0) lines.push(times.join(' | '))
         if (typeof d.url === 'string' && d.url.length > 0) lines.push('url: ' + d.url)
-        if (lines.length > 0) return lines.join('\n')
+        if (lines.length > 0) return lines.join('\n') + extractUsageFooter(text)
       }
     } catch (e) { /* fall through */ }
-    return text
+    return text + extractUsageFooter(text)
   }
 
   function fmtScreenshot(text) {
@@ -519,9 +545,9 @@ export function apply(ctx) {
       const d = data && typeof data === 'object' ? (data.data || data) : data
       if (d && typeof d === 'object') {
         const u = d.screenshotUrl || d.pageshotUrl || d.url
-        if (typeof u === 'string' && u.length > 0) return 'screenshot URL: ' + u
+        if (typeof u === 'string' && u.length > 0) return 'screenshot URL: ' + u + extractUsageFooter(text)
         const b64 = d.screenshot || d.image
-        if (typeof b64 === 'string' && b64.length > 0) return 'screenshot returned as embedded base64 image data (' + b64.length + ' chars)'
+        if (typeof b64 === 'string' && b64.length > 0) return 'screenshot returned as embedded base64 image data (' + b64.length + ' chars)' + extractUsageFooter(text)
       }
     } catch (e) { /* fall through */ }
     return text
@@ -539,7 +565,8 @@ export function apply(ctx) {
           else if (r && typeof r === 'object') lines.push(String(r.query || r.text || ''))
         }
         const filtered = lines.filter((l) => l && l.length > 0)
-        if (filtered.length > 0) return filtered.join('\n')
+        if (filtered.length > 0) return filtered.join('\n') + extractUsageFooter(text)
+        return '(no related queries found)' + extractUsageFooter(text)
       }
     } catch (e) { /* fall through */ }
     return text
@@ -559,7 +586,7 @@ export function apply(ctx) {
             lines.push('[' + (item && item.index !== undefined ? item.index : i) + '] dim=' + emb.length + ' [' + preview + ', ...]')
           }
         })
-        if (lines.length > 0) return lines.join('\n')
+        if (lines.length > 0) return lines.join('\n') + extractUsageFooter(text)
       }
     } catch (e) { /* fall through */ }
     return text
@@ -580,7 +607,7 @@ export function apply(ctx) {
           if (typeof t === 'string' && t.length > 200) t = t.slice(0, 200) + '...'
           lines.push('[' + (typeof score === 'number' ? score.toFixed(4) : String(score)) + '] ' + t)
         }
-        if (lines.length > 0) return lines.join('\n')
+        if (lines.length > 0) return lines.join('\n') + extractUsageFooter(text)
       }
     } catch (e) { /* fall through */ }
     return text
@@ -599,7 +626,7 @@ export function apply(ctx) {
           const score = item.score !== undefined ? item.score : item.confidence
           lines.push(String(pred) + (typeof score === 'number' ? ' (' + score.toFixed(4) + ')' : ''))
         }
-        if (lines.length > 0) return lines.join('\n')
+        if (lines.length > 0) return lines.join('\n') + extractUsageFooter(text)
       }
     } catch (e) { /* fall through */ }
     return text
@@ -621,7 +648,7 @@ export function apply(ctx) {
         lines.push('  [' + parts.join(' ') + '] page ' + (f.page !== undefined ? f.page : '?'))
         if (f.caption) lines.push('    ' + String(f.caption))
       }
-      return lines.join('\n')
+      return lines.join('\n') + extractUsageFooter(text)
     } catch (e) { /* fall through */ }
     return text
   }
@@ -812,7 +839,7 @@ export function apply(ctx) {
       if (args.cookies) headers['X-Set-Cookie'] = String(args.cookies)
 
       const tokenBudget = args.tokenBudget || toolDefaults.defaultTokenBudget
-      if (tokenBudget) headers['X-Token-Budget'] = String(tokenBudget)
+      if (tokenBudget) headers['X-Max-Tokens'] = String(tokenBudget)
 
       const engine = args.engine || toolDefaults.defaultEngine
       if (engine) headers['X-Engine'] = engine
@@ -822,13 +849,38 @@ export function apply(ctx) {
 
       if (toolDefaults.defaultPreset) headers['X-Preset'] = toolDefaults.defaultPreset
 
-      const res = await callJinaWithCfBypass({
+      let res = await callJinaWithCfBypass({
         url: READER, method: 'POST', headers,
         body: { url: String(args.url) }, timeoutMs: 120000, needsKey: false, apiKey: args.apiKey, signal,
       }, toolDefaults)
 
+      // Gracefully handle 409 budget exceeded error by retrying with X-Max-Tokens without X-Token-Budget
+      if (!res.ok && res.status === 409 && (res.text || '').includes('Token budget')) {
+        const retryHeaders = Object.assign({}, headers)
+        delete retryHeaders['X-Token-Budget']
+        retryHeaders['X-Max-Tokens'] = String(tokenBudget)
+        res = await callJinaWithCfBypass({
+          url: READER, method: 'POST', headers: retryHeaders,
+          body: { url: String(args.url) }, timeoutMs: 120000, needsKey: false, apiKey: args.apiKey, signal,
+        }, toolDefaults)
+      }
+
       if (!res.ok) return describeJinaError(res)
-      return res.text
+      if (args.json) return res.text
+
+      let outText = res.text
+      try {
+        const parsed = JSON.parse(res.text)
+        const d = parsed && (parsed.data || parsed)
+        if (d && typeof d === 'object' && typeof d.content === 'string') {
+          outText = d.content
+        }
+      } catch (e) {}
+
+      if (tokenBudget && outText.length > tokenBudget * 4) {
+        outText = outText.slice(0, tokenBudget * 4) + '\n\n[... truncated by tokenBudget cap ...]'
+      }
+      return outText + extractUsageFooter(res.text)
     },
   })
 
@@ -864,6 +916,7 @@ export function apply(ctx) {
       const headers = {
         Accept: 'application/json',
         'Content-Type': 'application/json',
+        'X-Respond-With': 'readerlm-v2',
       }
       const targetSel = args.targetSelector || toolDefaults.defaultTargetSelector
       if (targetSel) headers['X-Target-Selector'] = targetSel
@@ -885,7 +938,7 @@ export function apply(ctx) {
       if (iframe) headers['X-With-Iframe'] = 'true'
 
       const tokenBudget = args.tokenBudget || toolDefaults.defaultTokenBudget
-      if (tokenBudget) headers['X-Token-Budget'] = String(tokenBudget)
+      if (tokenBudget) headers['X-Max-Tokens'] = String(tokenBudget)
 
       const engine = args.engine || toolDefaults.defaultEngine
       if (engine) headers['X-Engine'] = engine
@@ -896,13 +949,23 @@ export function apply(ctx) {
         url: String(args.url),
         instruction: String(args.instruction),
         jsonSchema: args.schema,
+        respondWith: 'readerlm-v2',
       }
       const res = await callJinaWithCfBypass({
         url: READER, method: 'POST', headers,
         body, timeoutMs: 120000, needsKey: true, apiKey: args.apiKey, signal,
       }, toolDefaults)
       if (!res.ok) return describeJinaError(res)
-      return res.text
+
+      try {
+        const parsed = JSON.parse(res.text)
+        const d = parsed && (parsed.data || parsed)
+        if (d && typeof d === 'object') {
+          const structured = d.structured !== undefined ? d.structured : (d.json !== undefined ? d.json : (d.content && typeof d.content === 'object' ? d.content : d))
+          return JSON.stringify(structured, null, 2) + extractUsageFooter(res.text)
+        }
+      } catch (e) {}
+      return res.text + extractUsageFooter(res.text)
     },
   })
 
@@ -947,17 +1010,27 @@ export function apply(ctx) {
       if (detachInvisibles !== false) headers['X-Detach-Invisibles'] = 'true'
 
       const tokenBudget = args.tokenBudget || toolDefaults.defaultTokenBudget
-      if (tokenBudget) headers['X-Token-Budget'] = String(tokenBudget)
+      if (tokenBudget) headers['X-Max-Tokens'] = String(tokenBudget)
 
       if (toolDefaults.defaultPreset) headers['X-Preset'] = toolDefaults.defaultPreset
 
-      const res = await callJinaWithCfBypass({
+      let res = await callJinaWithCfBypass({
         url: READER, method: 'POST', headers,
         body: { url: String(args.url) }, timeoutMs: 120000, needsKey: false, apiKey: args.apiKey, signal,
       }, toolDefaults)
 
+      if (!res.ok && res.status === 409 && (res.text || '').includes('Token budget')) {
+        const retryHeaders = Object.assign({}, headers)
+        delete retryHeaders['X-Token-Budget']
+        retryHeaders['X-Max-Tokens'] = String(tokenBudget)
+        res = await callJinaWithCfBypass({
+          url: READER, method: 'POST', headers: retryHeaders,
+          body: { url: String(args.url) }, timeoutMs: 120000, needsKey: false, apiKey: args.apiKey, signal,
+        }, toolDefaults)
+      }
+
       if (!res.ok) return describeJinaError(res)
-      return res.text
+      return res.text + extractUsageFooter(res.text)
     },
   })
 
@@ -1098,11 +1171,31 @@ export function apply(ctx) {
     output: OUT,
     async execute(args, exec) {
       const signal = enterExec(exec)
-      const res = await callJina({
+      let res = await callJina({
         url: SEARCH, method: 'POST',
         headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
         body: { q: String(args.query), query_expansion: true }, timeoutMs: 60000, needsKey: true, apiKey: args.apiKey, signal,
       })
+      // If result is empty, retry with unhyphenated/cleaned query terms to prevent empty Google expansion drops
+      if (res.ok && res.text) {
+        try {
+          const parsed = JSON.parse(res.text)
+          const list = Array.isArray(parsed) ? parsed : (parsed && (parsed.results || parsed.data))
+          if ((!Array.isArray(list) || list.length === 0) && args.query.includes('-')) {
+            const cleaned = args.query.replace(/[-_]/g, ' ')
+            const retryRes = await callJina({
+              url: SEARCH, method: 'POST',
+              headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
+              body: { q: cleaned, query_expansion: true }, timeoutMs: 60000, needsKey: true, apiKey: args.apiKey, signal,
+            })
+            if (retryRes.ok && retryRes.text) {
+              const retryParsed = JSON.parse(retryRes.text)
+              const retryList = Array.isArray(retryParsed) ? retryParsed : (retryParsed && (retryParsed.results || retryParsed.data))
+              if (Array.isArray(retryList) && retryList.length > 0) res = retryRes
+            }
+          }
+        } catch (e) {}
+      }
       if (!res.ok) return describeJinaError(res)
       return fmtExpand(res.text, args.json === true)
     },
@@ -1172,14 +1265,14 @@ export function apply(ctx) {
 
   ctx.tools.register({
     name: 'jina_classify',
-    description: 'Classify texts into labels via Jina Classify API, mirroring the jina-cli \'classify\' command. Default model: jina-embeddings-v5-text-small.',
+    description: 'Classify texts into candidate labels via Jina Reranker Classification API, mirroring the jina-cli \'classify\' command. Default model: jina-reranker-v2-base-multilingual.',
     parameters: {
       type: 'object',
       additionalProperties: false,
       properties: {
         texts: { type: 'array', items: { type: 'string' }, description: 'Texts to classify.' },
         labels: { type: 'array', items: { type: 'string' }, description: 'Candidate labels.' },
-        model: { type: 'string', description: 'Embedding model used for classification. Default: jina-embeddings-v5-text-small.' },
+        model: { type: 'string', description: 'Reranker model used for classification. Default: jina-reranker-v2-base-multilingual.' },
         json: { type: 'boolean', description: 'Return the raw JSON response instead of formatted predictions.' },
         apiKey: { type: 'string', description: 'Optional Jina API key override.' },
       },
@@ -1188,7 +1281,7 @@ export function apply(ctx) {
     output: OUT,
     async execute(args, exec) {
       const signal = enterExec(exec)
-      const body = { model: args.model || 'jina-embeddings-v5-text-small', input: args.texts, labels: args.labels }
+      const body = { model: args.model || 'jina-reranker-v2-base-multilingual', input: args.texts, labels: args.labels }
       const res = await callJina({
         url: API + '/v1/classify', method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -1264,15 +1357,28 @@ export function apply(ctx) {
       const signal = enterExec(exec)
       const pathStr = String(args.filePath)
       let buffer
-      try {
-        if (ctx.fs && typeof ctx.fs.readFile === 'function') {
-          buffer = await ctx.fs.readFile(pathStr)
-        } else {
-          const nodeFs = await import('node:fs/promises')
-          buffer = await nodeFs.readFile(pathStr)
+      const candidatePaths = [pathStr]
+      if (!isAbsolute(pathStr)) {
+        if (currentCwd) candidatePaths.push(resolve(currentCwd, pathStr))
+        candidatePaths.push(resolve('/home/martin/api', pathStr))
+        candidatePaths.push(resolve(process.cwd(), pathStr))
+      }
+      let readErr
+      for (const p of candidatePaths) {
+        try {
+          if (ctx.fs && typeof ctx.fs.readFile === 'function') {
+            buffer = await ctx.fs.readFile(p)
+          } else {
+            const nodeFs = await import('node:fs/promises')
+            buffer = await nodeFs.readFile(p)
+          }
+          if (buffer) break
+        } catch (err) {
+          readErr = err
         }
-      } catch (err) {
-        return 'failed to read local file "' + pathStr + '": ' + (err.message || String(err))
+      }
+      if (!buffer) {
+        return 'failed to read local file "' + pathStr + '": ' + (readErr ? (readErr.message || String(readErr)) : 'file not found')
       }
 
       const ext = pathStr.split('.').pop().toLowerCase()
@@ -1297,8 +1403,13 @@ export function apply(ctx) {
       if (toolDefaults.defaultPreset) headers['X-Preset'] = toolDefaults.defaultPreset
       if (args.targetSelector) headers['X-Target-Selector'] = args.targetSelector
       const tokenBudget = args.tokenBudget || toolDefaults.defaultTokenBudget
-      if (tokenBudget) headers['X-Token-Budget'] = String(tokenBudget)
+      if (tokenBudget) headers['X-Max-Tokens'] = String(tokenBudget)
       if (toolDefaults.defaultRemoveOverlay) headers['X-Remove-Overlay'] = 'true'
+
+      const isImage = ['png', 'jpg', 'jpeg', 'webp'].includes(ext)
+      if (isImage) {
+        headers['X-Respond-With'] = 'jina-ocr'
+      }
 
       const body = {
         file: b64,
@@ -1306,13 +1417,16 @@ export function apply(ctx) {
         extension: ext,
       }
       if (ext === 'pdf') body.pdf = b64
+      if (isImage) {
+        body.ocr = { preferEndToEnd: true }
+      }
 
       const res = await callJinaWithCfBypass({
         url: READER, method: 'POST', headers,
         body, timeoutMs: 120000, needsKey: true, apiKey: args.apiKey, signal,
       }, toolDefaults)
       if (!res.ok) return describeJinaError(res)
-      return res.text
+      return res.text + extractUsageFooter(res.text)
     },
   })
 
@@ -1332,31 +1446,47 @@ export function apply(ctx) {
     async execute(args, exec) {
       const signal = enterExec(exec)
       const statement = String(args.statement)
-      const res = await callJina({
+      let res = await callJina({
         url: GROUND, method: 'POST',
         headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
-        body: { statement }, timeoutMs: 60000, needsKey: true, apiKey: args.apiKey, signal,
+        body: { statement }, timeoutMs: 120000, needsKey: true, apiKey: args.apiKey, signal,
       })
+      if (!res.ok) {
+        const getUrl = GROUND + encodeURIComponent(statement)
+        const getRes = await callJina({
+          url: getUrl, method: 'GET',
+          headers: { Accept: 'application/json' },
+          timeoutMs: 120000, needsKey: true, apiKey: args.apiKey, signal,
+        })
+        if (getRes.ok) res = getRes
+      }
       if (!res.ok) return describeJinaError(res)
       try {
         const data = JSON.parse(res.text)
         const d = data && typeof data === 'object' ? (data.data || data) : data
         if (d && typeof d === 'object') {
           const lines = []
-          if (d.factuality !== undefined) lines.push(`Factuality Score: ${(Number(d.factuality) * 100).toFixed(1)}%`)
-          if (d.result !== undefined) lines.push(`Verdict: ${d.result}`)
+          const factuality = d.factuality !== undefined ? d.factuality : d.score
+          if (factuality !== undefined) lines.push(`Factuality Score: ${(Number(factuality) * 100).toFixed(1)}%`)
+          let verdict = d.result !== undefined ? d.result : d.verdict
+          if (verdict === undefined && d.grounding !== undefined) {
+            verdict = d.grounding === true ? 'TRUE / SUPPORTED' : (d.grounding === false ? 'FALSE / CONTRADICTED' : String(d.grounding))
+          }
+          if (verdict !== undefined) lines.push(`Verdict: ${verdict}`)
           if (d.reason) lines.push(`Reasoning: ${d.reason}`)
-          if (Array.isArray(d.references) && d.references.length > 0) {
+          const refs = Array.isArray(d.references) ? d.references : []
+          if (refs.length > 0) {
             lines.push('\nReferences & Evidence:')
-            d.references.slice(0, 5).forEach((ref, idx) => {
-              lines.push(`  [${idx + 1}] ${ref.title || ref.url} (${ref.url})`)
-              if (ref.keyQuote) lines.push(`      Quote: "${ref.keyQuote}"`)
+            refs.slice(0, 5).forEach((ref, idx) => {
+              lines.push(`  [${idx + 1}] ${ref.title || ref.url || 'Source'} (${ref.url || ''})`)
+              const quote = ref.key_quote || ref.keyQuote
+              if (quote) lines.push(`      Quote: "${quote}"`)
             })
           }
-          if (lines.length > 0) return lines.join('\n')
+          if (lines.length > 0) return lines.join('\n') + extractUsageFooter(res.text)
         }
       } catch (e) { /* fall through */ }
-      return res.text
+      return res.text + extractUsageFooter(res.text)
     },
   })
 

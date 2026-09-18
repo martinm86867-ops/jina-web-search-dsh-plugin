@@ -119,7 +119,21 @@ test('index.js registers effective extraction parameters across tools', () => {
   // jina_read_file checks
   assert.match(indexSource, /name:\s*'jina_read_file'/)
   assert.match(indexSource, /localOnly:\s*\{\s*type:\s*'boolean'/)
+  assert.match(indexSource, /jina-ocr/)
+  assert.match(indexSource, /preferEndToEnd/)
 
   // Centralized CF bypass
   assert.match(indexSource, /function callJinaWithCfBypass/)
+
+  // DEF-001: classify uses reranker-v2-base-multilingual
+  assert.match(indexSource, /jina-reranker-v2-base-multilingual/)
+
+  // DEF-003: X-Max-Tokens for non-rejecting budget trimming
+  assert.match(indexSource, /X-Max-Tokens/)
+
+  // DEF-004: readerlm-v2 respondWith
+  assert.match(indexSource, /respondWith:\s*'readerlm-v2'/)
+
+  // DEF-011: usage footer tracking
+  assert.match(indexSource, /function extractUsageFooter/)
 })

@@ -203,10 +203,10 @@ export const PROXY_ENV_VARS = [
 
 /** Human-readable reason a candidate address was rejected. */
 const REJECT_REASONS = {
-  empty: '地址为空',
-  type: '地址不是字符串',
-  invalid: '不是有效的主机:端口地址',
-  scheme: '不支持的协议（网络 helper 只支持 http:// 与 https:// 代理）',
+  empty: 'address is empty (地址为空)',
+  type: 'address is not a string (地址不是字符串)',
+  invalid: 'invalid host:port address (不是有效的主机:端口地址)',
+  scheme: 'unsupported protocol (only http:// and https:// supported) / 不支持的协议',
 }
 
 /** Explain one rejection reason (the plugin's user-facing language). */
