@@ -16,9 +16,7 @@
  * answers with the key's Jina identity and credit balance — the same data
  * `jina_primer` reports — and with the proxy the probe actually ran through.
  */
-window.__ModuleLoader__.load({
-  id: 'dsh-jina',
-  factory: function (require) {
+function jinaClientFactory(require) {
     var React = require('react')
     var exports = {}
     var CRED = 'JINA_API_KEY'
@@ -1052,7 +1050,7 @@ window.__ModuleLoader__.load({
           : null)
     }
 
-    exports.name = 'dsh-jina'
+    exports.name = '@martinm86867-ops/dsh-jina'
     exports.inject = ['slots', 'remote', 'remote.credentials', 'remote.settings']
 
     exports.apply = function (ctx) {
@@ -1138,44 +1136,30 @@ window.__ModuleLoader__.load({
         return undefined
       }
 
-      // 1. Bundle-level configuration for the new Plugins page (key: 'dsh-jina')
+      function renderCard(slotProps) {
+        if (slotProps && slotProps.view === 'summary') {
+          return 'API key, local proxy, scraping presets, and anti-bot configuration for Jina AI tools.'
+        }
+        return React.createElement(JinaCard, {
+          ctx: ctx,
+          remote: typeof ctx.get === 'function' ? ctx.get('remote') : undefined,
+          getCredentials: getCredentials,
+          getSettings: getSettings,
+          view: slotProps ? slotProps.view : 'page',
+          standalone: true,
+        })
+      }
+
+      // 1. Bundle-level configuration for the new Plugins page (keys: '@martinm86867-ops/dsh-jina' and 'dsh-jina')
       ctx.slots.inject('plugins.bundle.config', function () {
-        return slots.register(
-          { name: 'plugins.bundle.config', key: 'dsh-jina' },
-          function (slotProps) {
-            if (slotProps && slotProps.view === 'summary') {
-              return 'API key, local proxy, scraping presets, and anti-bot configuration for Jina AI tools.'
-            }
-            return React.createElement(JinaCard, {
-              ctx: ctx,
-              remote: typeof ctx.get === 'function' ? ctx.get('remote') : undefined,
-              getCredentials: getCredentials,
-              getSettings: getSettings,
-              view: slotProps ? slotProps.view : 'page',
-              standalone: true,
-            })
-          },
-        )
+        slots.register({ name: 'plugins.bundle.config', key: '@martinm86867-ops/dsh-jina' }, renderCard)
+        return slots.register({ name: 'plugins.bundle.config', key: 'dsh-jina' }, renderCard)
       })
 
-      // 2. Row-level configuration for the jina-tools row (key: 'dsh-jina#jina-tools')
+      // 2. Row-level configuration for the jina-tools row (keys: '@martinm86867-ops/dsh-jina#jina-tools' and 'dsh-jina#jina-tools')
       ctx.slots.inject('plugins.row.config', function () {
-        return slots.register(
-          { name: 'plugins.row.config', key: 'dsh-jina#jina-tools' },
-          function (slotProps) {
-            if (slotProps && slotProps.view === 'summary') {
-              return 'API key, local proxy, scraping presets, and anti-bot configuration for Jina AI tools.'
-            }
-            return React.createElement(JinaCard, {
-              ctx: ctx,
-              remote: typeof ctx.get === 'function' ? ctx.get('remote') : undefined,
-              getCredentials: getCredentials,
-              getSettings: getSettings,
-              view: slotProps ? slotProps.view : 'page',
-              standalone: true,
-            })
-          },
-        )
+        slots.register({ name: 'plugins.row.config', key: '@martinm86867-ops/dsh-jina#jina-tools' }, renderCard)
+        return slots.register({ name: 'plugins.row.config', key: 'dsh-jina#jina-tools' }, renderCard)
       })
 
       // 3. Legacy Settings section slot (key: 'jina-tools') for earlier dsh versions
@@ -1196,5 +1180,18 @@ window.__ModuleLoader__.load({
     }
 
     return exports
-  },
-})
+}
+
+if (typeof window !== 'undefined' && window.__ModuleLoader__ && typeof window.__ModuleLoader__.load === 'function') {
+  window.__ModuleLoader__.load({
+    id: '@martinm86867-ops/dsh-jina',
+    factory: jinaClientFactory,
+  })
+
+  try {
+    window.__ModuleLoader__.load({
+      id: 'dsh-jina',
+      factory: jinaClientFactory,
+    })
+  } catch (e) {}
+}
