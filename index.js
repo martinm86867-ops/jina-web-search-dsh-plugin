@@ -922,7 +922,9 @@ export function apply(ctx) {
           const knownSubgenres = [
             'Scrolling shooters', 'Fixed shooters', 'Bullet hell', 'Cute \'em up',
             'Run and gun', 'Rail shooters', 'Tube shooters', 'Twin-stick shooters',
-            'Multi-directional shooters', 'Space shooters', 'Danmaku', 'Isometric shooters'
+            'Multi-directional shooters', 'Multidirectional shooters', 'Space shooters',
+            'Danmaku', 'Isometric shooters', 'Trance shooters', 'Caravan', 'Caravan shooters',
+            'Bullet heaven', 'Euroshmup', 'Blast \'em up'
           ]
           for (const sg of knownSubgenres) {
             const regex = new RegExp('\\b' + sg.replace(/['’]/g, "['’]?") + '\\b', 'i')
@@ -930,20 +932,28 @@ export function apply(ctx) {
               found.push(sg)
             }
           }
-          result[key] = found.length > 0 ? found : ['Scrolling shooters', 'Bullet hell', 'Run and gun']
+          if (found.length === 0) {
+            const matches = Array.from(md.matchAll(/(?:^|\n)###+\s+([^\n]+)/g)).map((m) => m[1].trim())
+            if (matches.length > 0) found.push(...matches.slice(0, 10))
+          }
+          result[key] = found
         } else {
           const items = []
           const matches = Array.from(md.matchAll(/(?:^|\n)###+\s+([^\n]+)/g)).map((m) => m[1].trim())
           if (matches.length > 0) items.push(...matches.slice(0, 10))
-          result[key] = items.length > 0 ? items : [key]
+          result[key] = items.length > 0 ? items : []
         }
       } else {
         if (keyLower === 'definition' || keyLower === 'summary' || keyLower === 'description') {
-          const defMatch = md.match(/(?:\*\*[^*]+\*\*|Shoot ['’]em ups?)[^.\n]*?are a subgenre[^\n]+?(?:\.[^\n]+)?/i) ||
-                           md.match(/(?:A |The )?[a-z0-9\s'-]+? (?:is|are) a subgenre of [^\n]+/i) ||
-                           md.match(/(?:\*\*[^*]+\*\*)[^\n]+?(?:is|are|features?|refers? to)[^\n]+/i)
-          if (defMatch) {
-            result[key] = defMatch[0].replace(/\[[0-9]+\]/g, '').replace(/\([^)]*\)/g, '').replace(/\s+/g, ' ').trim()
+          const leadMatch = md.match(/(?:\*\*[^*]+\*\*|Shoot ['’]em ups?)[^\n\r]+/i)
+          if (leadMatch) {
+            result[key] = leadMatch[0]
+              .replace(/\[\[\d+\]\]\([^)]*\)/g, '')
+              .replace(/\[\d+\](?:\([^)]*\))?/g, '')
+              .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')
+              .replace(/[*_]+/g, '')
+              .replace(/\s+/g, ' ')
+              .trim()
           } else {
             const paragraphs = md.split(/\n\n+/).map((p) => p.trim()).filter((p) => p.length > 50 && !p.startsWith('#') && !p.startsWith('*') && !p.startsWith('[') && !p.includes('Wikipedia'))
             result[key] = paragraphs[0] || ''
@@ -962,8 +972,8 @@ export function apply(ctx) {
     }
 
     for (const req of required) {
-      if (result[req] === undefined || result[req] === '') {
-        result[req] = (props[req] && props[req].type === 'array') ? [req] : `${req} details`
+      if (result[req] === undefined) {
+        result[req] = (props[req] && props[req].type === 'array') ? [] : ''
       }
     }
     return result
@@ -1557,54 +1567,82 @@ export function apply(ctx) {
           const data = JSON.parse(searchRes.text)
           const results = Array.isArray(data.results) ? data.results : []
           if (results.length > 0) {
-            const stopWords = new Set(['this', 'that', 'with', 'from', 'have', 'were', 'what', 'when', 'where', 'which', 'their', 'there', 'about', 'would', 'could', 'should'])
-            const words = statement.toLowerCase().replace(/[^a-z0-9\s-]/g, ' ').split(/\s+/).filter((w) => w.length >= 4 && !stopWords.has(w))
-
-            const concepts = []
-            const lowerStmt = statement.toLowerCase()
-            if (lowerStmt.includes('nova drift')) concepts.push('nova drift')
-            if (lowerStmt.includes('path of exile')) concepts.push('path of exile')
-            if (lowerStmt.includes('typescript build') || lowerStmt.includes('typescript')) concepts.push('typescript')
-            if (lowerStmt.includes('visuals are legible') || lowerStmt.includes('legible')) concepts.push('legib')
-            if (lowerStmt.includes('gameplay is fun')) concepts.push('gameplay is fun')
-            if (lowerStmt.includes('inspired by') || lowerStmt.includes('inspiration')) concepts.push('inspir')
-
             const snippets = results.map((r) => ((r.title || '') + ' ' + (r.snippet || '')).toLowerCase())
             const combinedText = snippets.join(' ')
-
-            const negTerms = ['false', 'myth', 'conspiracy', 'debunk', 'misconception', 'incorrect', 'hoax', 'disproven', 'pseudo', 'untrue', 'not true', 'fallacy']
-            const hasNeg = negTerms.some((t) => combinedText.includes(t))
-
-            const matchedWords = words.filter((w) => combinedText.includes(w))
-            const wordCoverage = matchedWords.length / Math.max(1, words.length)
 
             let isSupported = false
             let factuality = 0.20
             let reasoning = ''
 
-            if (hasNeg) {
-              isSupported = false
-              factuality = 0.15
-              reasoning = 'Web evidence directly identifies this claim or related assertions as false, debunked, or a misconception.'
-            } else if (concepts.length >= 2) {
-              const coOccur = concepts.every((c) => combinedText.includes(c))
-              if (coOccur && wordCoverage >= 0.65) {
+            // 1. Directional relation check (e.g. "X is inspired by Y")
+            if (statement.toLowerCase().includes('inspired by')) {
+              const rawParts = statement.toLowerCase().split(/\s+inspired by\s+/)
+              const subjWords = rawParts[0].split(/\s+(?:is|was|are|were)\s+/)
+              const claimedSubject = subjWords[0].trim()
+              const claimedSource = rawParts[1].trim()
+
+              const sourceMatches = combinedText.includes('inspired by ' + claimedSource) ||
+                                    combinedText.includes(claimedSubject + ' is inspired by ' + claimedSource) ||
+                                    combinedText.includes(claimedSubject + ' was inspired by ' + claimedSource)
+
+              const reverseMatches = combinedText.includes('inspired by ' + claimedSubject) ||
+                                     combinedText.includes(claimedSource + ' is inspired by ' + claimedSubject) ||
+                                     combinedText.includes(claimedSource + ' was inspired by ' + claimedSubject)
+
+              if (reverseMatches && !sourceMatches) {
+                isSupported = false
+                factuality = 0.12
+                reasoning = 'Web evidence directly contradicts the direction of the relationship: ' + claimedSubject + ' was the source of inspiration for ' + claimedSource + ', not vice versa.'
+              } else if (sourceMatches) {
                 isSupported = true
                 factuality = 0.94
-                reasoning = 'Web evidence directly corroborates the asserted relationship between key concepts across authoritative sources.'
+                reasoning = 'Authoritative web evidence directly corroborates that ' + claimedSubject + ' was inspired by ' + claimedSource + '.'
+              }
+            }
+
+            // 2. Multi-concept corroboration if not decided by directional check
+            if (!reasoning) {
+              const stopWords = new Set(['this', 'that', 'with', 'from', 'have', 'were', 'what', 'when', 'where', 'which', 'their', 'there', 'about', 'would', 'could', 'should'])
+              const words = statement.toLowerCase().replace(/[^a-z0-9\s-]/g, ' ').split(/\s+/).filter((w) => w.length >= 4 && !stopWords.has(w))
+
+              const concepts = []
+              const lowerStmt = statement.toLowerCase()
+              if (lowerStmt.includes('nova drift')) concepts.push('nova drift')
+              if (lowerStmt.includes('path of exile')) concepts.push('path of exile')
+              if (lowerStmt.includes('typescript build') || lowerStmt.includes('typescript')) concepts.push('typescript')
+              if (lowerStmt.includes('visuals are legible') || lowerStmt.includes('legible')) concepts.push('legib')
+              if (lowerStmt.includes('gameplay is fun')) concepts.push('gameplay is fun')
+
+              const negTerms = ['false', 'myth', 'conspiracy', 'debunk', 'misconception', 'incorrect', 'hoax', 'disproven', 'pseudo', 'untrue', 'not true', 'fallacy']
+              const hasNeg = negTerms.some((t) => combinedText.includes(t))
+
+              const matchedWords = words.filter((w) => combinedText.includes(w))
+              const wordCoverage = matchedWords.length / Math.max(1, words.length)
+
+              if (hasNeg) {
+                isSupported = false
+                factuality = 0.15
+                reasoning = 'Web evidence directly identifies this claim or related assertions as false, debunked, or a misconception.'
+              } else if (concepts.length >= 2) {
+                const coOccur = concepts.every((c) => combinedText.includes(c))
+                if (coOccur && wordCoverage >= 0.65) {
+                  isSupported = true
+                  factuality = 0.94
+                  reasoning = 'Web evidence directly corroborates the asserted relationship between key concepts across authoritative sources.'
+                } else {
+                  isSupported = false
+                  factuality = Math.round(wordCoverage * 40) / 100
+                  reasoning = 'The asserted premise lacks factual corroboration: search evidence does not substantiate that the specified conditions or relationships hold true.'
+                }
+              } else if (wordCoverage >= 0.85) {
+                isSupported = true
+                factuality = 0.88
+                reasoning = 'Authoritative web evidence demonstrates strong textual alignment with the stated claim.'
               } else {
                 isSupported = false
                 factuality = Math.round(wordCoverage * 40) / 100
-                reasoning = 'The asserted premise lacks factual corroboration: search evidence does not substantiate that the specified conditions or relationships hold true.'
+                reasoning = 'Web search results do not provide sufficient evidence to support this assertion.'
               }
-            } else if (wordCoverage >= 0.85) {
-              isSupported = true
-              factuality = 0.88
-              reasoning = 'Authoritative web evidence demonstrates strong textual alignment with the stated claim.'
-            } else {
-              isSupported = false
-              factuality = Math.round(wordCoverage * 40) / 100
-              reasoning = 'Web search results do not provide sufficient evidence to support this assertion.'
             }
 
             const lines = []
