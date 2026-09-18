@@ -76,7 +76,7 @@ Every model session receives access to 16 specialized `jina_*` tools:
 ### Dense AI, Reranking & Truth Verification
 | Tool | Target Gateway | Purpose & Differentiators |
 |---|---|---|
-| `jina_fact_check` | `g.jina.ai` Grounding | Live fact verification of statements against real-time web evidence with credibility scoring. |
+| `jina_fact_check` | Search evidence + evaluator | Verifies a claim against retrieved web evidence, returning SUPPORTED / REFUTED / MIXED / UNKNOWN. UNKNOWN is returned whenever evidence is insufficient, attribution-only or contradictory; the sources behind every verdict are always included. (`g.jina.ai` Grounding is the fallback when search yields nothing usable.) |
 | `jina_embed` | `api.jina.ai` / v5 | Dense text embeddings with Matryoshka dimension scaling (default: `jina-embeddings-v5-text-small`). |
 | `jina_rerank` | `api.jina.ai` / v3.5 | Document relevance reranking against a target query (default: `jina-reranker-v3.5`). |
 | `jina_classify` | `api.jina.ai` / Classify | Zero-shot text classification into candidate label categories. |

@@ -47,6 +47,7 @@ import {
   createSettingsSchema, describeRejectReason, proxySettingOf, selectProxy, toolSettingsOf,
 } from './proxy.js'
 import { WEB_SEARCH_TOOL } from './tool-contracts.js'
+import { evaluateGroundedResults, formatGroundedVerdict } from './eval-grounded.js'
 
 export const name = 'dsh-jina'
 
@@ -1538,7 +1539,7 @@ export function apply(ctx) {
 
   ctx.tools.register({
     name: 'jina_fact_check',
-    description: 'Verify the truthfulness and factual consistency of a statement or claim against current web evidence via Jina Grounding. Returns verification verdict, factual confidence score, and authoritative references.',
+    description: 'Verify a factual claim against current web evidence. Returns one of four verdicts — SUPPORTED, REFUTED, MIXED or UNKNOWN — with the sources that produced it. UNKNOWN is returned whenever the retrieved evidence is insufficient, attributed-only or contradictory, rather than inventing a verdict. Evidence and references are always included so the verdict can be audited.',
     parameters: {
       type: 'object',
       additionalProperties: false,
@@ -1553,9 +1554,10 @@ export function apply(ctx) {
       const signal = enterExec(exec)
       const statement = String(args.statement)
 
-      // Primary strategy: real-time web search grounding via SEARCH gateway
-      // This eliminates the 120s timeout hanging on g.jina.ai cluster
-      let searchRes = await callJina({
+      // Primary strategy: retrieve evidence via the SEARCH gateway, then derive
+      // the verdict with the pure evaluator. The verdict is a function of the
+      // retrieved sources — never a standalone string-matching guess.
+      const searchRes = await callJina({
         url: SEARCH, method: 'POST',
         headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
         body: { q: statement, num: 5 },
@@ -1563,104 +1565,24 @@ export function apply(ctx) {
       })
 
       if (searchRes.ok && searchRes.text) {
+        let data
         try {
-          const data = JSON.parse(searchRes.text)
-          const results = Array.isArray(data.results) ? data.results : []
-          if (results.length > 0) {
-            const snippets = results.map((r) => ((r.title || '') + ' ' + (r.snippet || '')).toLowerCase())
-            const combinedText = snippets.join(' ')
-
-            let isSupported = false
-            let factuality = 0.20
-            let reasoning = ''
-
-            // 1. Directional relation check (e.g. "X is inspired by Y")
-            if (statement.toLowerCase().includes('inspired by')) {
-              const rawParts = statement.toLowerCase().split(/\s+inspired by\s+/)
-              const subjWords = rawParts[0].split(/\s+(?:is|was|are|were)\s+/)
-              const claimedSubject = subjWords[0].trim()
-              const claimedSource = rawParts[1].trim()
-
-              const sourceMatches = combinedText.includes('inspired by ' + claimedSource) ||
-                                    combinedText.includes(claimedSubject + ' is inspired by ' + claimedSource) ||
-                                    combinedText.includes(claimedSubject + ' was inspired by ' + claimedSource)
-
-              const reverseMatches = combinedText.includes('inspired by ' + claimedSubject) ||
-                                     combinedText.includes(claimedSource + ' is inspired by ' + claimedSubject) ||
-                                     combinedText.includes(claimedSource + ' was inspired by ' + claimedSubject)
-
-              if (reverseMatches && !sourceMatches) {
-                isSupported = false
-                factuality = 0.12
-                reasoning = 'Web evidence directly contradicts the direction of the relationship: ' + claimedSubject + ' was the source of inspiration for ' + claimedSource + ', not vice versa.'
-              } else if (sourceMatches) {
-                isSupported = true
-                factuality = 0.94
-                reasoning = 'Authoritative web evidence directly corroborates that ' + claimedSubject + ' was inspired by ' + claimedSource + '.'
-              }
-            }
-
-            // 2. Multi-concept corroboration if not decided by directional check
-            if (!reasoning) {
-              const stopWords = new Set(['this', 'that', 'with', 'from', 'have', 'were', 'what', 'when', 'where', 'which', 'their', 'there', 'about', 'would', 'could', 'should'])
-              const words = statement.toLowerCase().replace(/[^a-z0-9\s-]/g, ' ').split(/\s+/).filter((w) => w.length >= 4 && !stopWords.has(w))
-
-              const concepts = []
-              const lowerStmt = statement.toLowerCase()
-              if (lowerStmt.includes('nova drift')) concepts.push('nova drift')
-              if (lowerStmt.includes('path of exile')) concepts.push('path of exile')
-              if (lowerStmt.includes('typescript build') || lowerStmt.includes('typescript')) concepts.push('typescript')
-              if (lowerStmt.includes('visuals are legible') || lowerStmt.includes('legible')) concepts.push('legib')
-              if (lowerStmt.includes('gameplay is fun')) concepts.push('gameplay is fun')
-
-              const negTerms = ['false', 'myth', 'conspiracy', 'debunk', 'misconception', 'incorrect', 'hoax', 'disproven', 'pseudo', 'untrue', 'not true', 'fallacy']
-              const hasNeg = negTerms.some((t) => combinedText.includes(t))
-
-              const matchedWords = words.filter((w) => combinedText.includes(w))
-              const wordCoverage = matchedWords.length / Math.max(1, words.length)
-
-              if (hasNeg) {
-                isSupported = false
-                factuality = 0.15
-                reasoning = 'Web evidence directly identifies this claim or related assertions as false, debunked, or a misconception.'
-              } else if (concepts.length >= 2) {
-                const coOccur = concepts.every((c) => combinedText.includes(c))
-                if (coOccur && wordCoverage >= 0.65) {
-                  isSupported = true
-                  factuality = 0.94
-                  reasoning = 'Web evidence directly corroborates the asserted relationship between key concepts across authoritative sources.'
-                } else {
-                  isSupported = false
-                  factuality = Math.round(wordCoverage * 40) / 100
-                  reasoning = 'The asserted premise lacks factual corroboration: search evidence does not substantiate that the specified conditions or relationships hold true.'
-                }
-              } else if (wordCoverage >= 0.85) {
-                isSupported = true
-                factuality = 0.88
-                reasoning = 'Authoritative web evidence demonstrates strong textual alignment with the stated claim.'
-              } else {
-                isSupported = false
-                factuality = Math.round(wordCoverage * 40) / 100
-                reasoning = 'Web search results do not provide sufficient evidence to support this assertion.'
-              }
-            }
-
-            const lines = []
-            lines.push(`Factuality Score: ${(factuality * 100).toFixed(1)}%`)
-            lines.push(`Verdict: ${isSupported ? 'TRUE / SUPPORTED' : 'FALSE / CONTRADICTED'}`)
-            lines.push(`Reasoning: ${reasoning}`)
-            lines.push('\nReferences & Evidence:')
-            results.slice(0, 3).forEach((r, idx) => {
-              lines.push(`  [${idx + 1}] ${r.title || 'Source'} (${r.url || ''})`)
-              if (r.snippet) lines.push(`      Quote: "${r.snippet}"`)
-            })
-            return lines.join('\n') + extractUsageFooter(searchRes.text)
+          data = JSON.parse(searchRes.text)
+        } catch (e) {
+          data = undefined
+        }
+        if (data) {
+          const verdict = evaluateGroundedResults(statement, data)
+          if (verdict.evidence.length > 0) {
+            return formatGroundedVerdict(verdict, statement) + extractUsageFooter(searchRes.text)
           }
-        } catch (e) {}
+        }
       }
 
-      // Fallback to GROUND if search returned nothing
-      let res = await callJina({
+      // Fallback to GROUND when the search gateway returned nothing usable.
+      if (searchRes.ok && !searchRes.text) return describeJinaError(searchRes)
+      if (!searchRes.ok) return describeJinaError(searchRes)
+      const res = await callJina({
         url: GROUND, method: 'POST',
         headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
         body: { q: statement, statement }, timeoutMs: 30000, needsKey: true, apiKey: args.apiKey, signal,

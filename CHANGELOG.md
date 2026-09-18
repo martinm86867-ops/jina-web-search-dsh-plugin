@@ -2,6 +2,21 @@
 
 Full version history of `dsh-jina`.
 
+### 1.0.1
+
+- **fix** **`jina_fact_check` returned fabricated verdicts.** The primary path never called a fact-checking service: it ran a SEARCH query, concatenated the top snippets into one lowercase string, and derived a verdict from **hardcoded string matching**. Consequences, all reproduced and now covered by tests:
+  - Every SUPPORTED verdict reported exactly **88.0%**, because `factuality = 0.88` was a literal constant in the `wordCoverage >= 0.85` branch; FALSE came from literal `0.15` / `0.12` / `0.20` or `wordCoverage * 0.40`.
+  - A FALSE verdict was triggered by the mere **presence** of a negation word (`false`, `myth`, `debunk`) anywhere in a snippet, **without checking what was being negated** — so a page confirming a claim was read as refuting it, and any contested topic scored FALSE in both directions.
+  - The word-overlap proxy **inverted specificity**: a claim full of dates, figures and proper nouns shares few tokens with any snippet, so the best-documented claims scored lowest while vague statements scored highest.
+  - Scoring was further tuned to eval fixtures (`nova drift`, `path of exile`, `typescript`, `visuals are legible`, `gameplay is fun`) hardcoded into the production path.
+  - The `g.jina.ai` Grounding call was unreachable except when search returned zero results.
+- **feat** **`eval-grounded.js`** — new zero-dependency pure module owning the evaluation contract: relevance gate, explicit-refutation detection, attribution awareness, numeric-figure verification, and abstention. Verdicts are now `SUPPORTED` / `REFUTED` / `MIXED` / `UNKNOWN`, and UNKNOWN is the default whenever evidence is insufficient, attribution-only, contradictory, or does not contain the claim's stated figures.
+- **fix** Confidence is computed from evidence coverage instead of a literal constant, so it is reproducible from the returned sources.
+- **fix** Refutation must name the claim: a negation is only counted when the clause it negates shares content with the claim under test, and typographic quotes are normalised so headlines such as `Are Not "Genocide"` are matched.
+- **fix** Titles are scanned alongside snippets, since the verdict often lives in the headline while the body text is neutral.
+- **feat** Evidence and references are always returned with the verdict so it can be audited; the tool description no longer claims a Grounding-backed score.
+- **test** `test/fact-check.test.js` (22 behaviour cases) replaces the previous coverage, which asserted only that the tool name appeared in the source file and could not fail on a wrong verdict. Includes the primary regression: the vague and dated forms of the same claim must both be SUPPORTED, where the old proxy returned TRUE for the vague form and FALSE for the dated one.
+
 ### 1.0.0 (2026-09-17)
 
 - **feat** **Expanded 16-Tool Intelligence Suite**: Full coverage of web search, batch querying (`jina_search_batch`), structured extraction via ReaderLM-v2 (`jina_extract`), semantic markdown segmentation (`jina_chunk`), local air-gapped document processing (`jina_read_file`), fact verification via Grounding (`jina_fact_check`), dense embeddings (`jina_embed`), reranking (`jina_rerank`), zero-shot classification (`jina_classify`), and document OCR (`jina_pdf`).
