@@ -125,8 +125,8 @@ test('index.js registers effective extraction parameters across tools', () => {
   // Centralized CF bypass
   assert.match(indexSource, /function callJinaWithCfBypass/)
 
-  // DEF-001: classify uses reranker-v2-base-multilingual
-  assert.match(indexSource, /jina-reranker-v2-base-multilingual/)
+  // DEF-001 & DEF-012: classify uses jina-embeddings-v2-base-en
+  assert.match(indexSource, /jina-embeddings-v2-base-en/)
 
   // DEF-003: X-Max-Tokens for non-rejecting budget trimming
   assert.match(indexSource, /X-Max-Tokens/)
