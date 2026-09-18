@@ -49,7 +49,7 @@ import {
 import { WEB_SEARCH_TOOL } from './tool-contracts.js'
 import { evaluateGroundedResults, formatGroundedVerdict } from './eval-grounded.js'
 
-export const name = 'dsh-jina'
+export const name = '@martinm86867-ops/dsh-jina'
 
 export const inject = ['fs', 'subprocess', 'tools']
 

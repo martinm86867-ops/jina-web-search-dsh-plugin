@@ -2,6 +2,14 @@
 
 Full version history of `dsh-jina`.
 
+### 1.0.2
+
+- **chore** **Renamed the package to `@martinm86867-ops/dsh-jina`.** The unscoped name `dsh-jina` is already taken on npm by an unrelated project (`mouyase/dsh-jina`, "Jina MCP native plugin with proxy + tool allowlist support"), so the package could not be published under it. The DSH registration row in `cordis.patch.yml` and the `name` export in `index.js` moved with it, since the client-modules scan matches on an exact package name.
+- **chore** **Detached from the fork network.** The repository is now standalone rather than a fork of `minatoAI/jina-web-search-dsh-plugin`. All commits preserved.
+- **docs** Repo metadata (`repository`, `bugs`, `homepage`) now points at this repository instead of upstream.
+
+Internal runtime contracts are deliberately unchanged: the `/api/dsh-jina/primer` route, the settings namespace id `jina-tools`, and the browser card keys still carry the original identifiers, because those are coupled to the running host and web settings page rather than to the package name.
+
 ### 1.0.1
 
 - **fix** **`jina_fact_check` returned fabricated verdicts.** The primary path never called a fact-checking service: it ran a SEARCH query, concatenated the top snippets into one lowercase string, and derived a verdict from **hardcoded string matching**. Consequences, all reproduced and now covered by tests:

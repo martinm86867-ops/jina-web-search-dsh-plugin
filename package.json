@@ -1,6 +1,6 @@
 {
-  "name": "dsh-jina",
-  "version": "1.0.1",
+  "name": "@martinm86867-ops/dsh-jina",
+  "version": "1.0.2",
   "description": "Jina AI tools for DeepSeek Harness: search (incl. arxiv/ssrn academic domains), read, screenshot, embed, rerank, classify, pdf, expand, datetime, primer \u2014 with a settings-page API key UI and a manually configurable local proxy.",
   "type": "module",
   "main": "index.js",
@@ -51,5 +51,13 @@
   ],
   "scripts": {
     "test": "node --test"
-  }
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/martinm86867-ops/jina-web-search-dsh-plugin.git"
+  },
+  "bugs": {
+    "url": "https://github.com/martinm86867-ops/jina-web-search-dsh-plugin/issues"
+  },
+  "homepage": "https://github.com/martinm86867-ops/jina-web-search-dsh-plugin#readme"
 }

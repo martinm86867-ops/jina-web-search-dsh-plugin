@@ -1,4 +1,4 @@
-# dsh-jina
+# @martinm86867-ops/dsh-jina
 
 **Comprehensive Web Intelligence, High-Signal Extraction & Dense Reasoning Suite for DeepSeek Harness**
 
@@ -87,7 +87,7 @@ Every model session receives access to 16 specialized `jina_*` tools:
 
 ## Effective Extraction & Anti-Bot Defense
 
-Modern websites deploy aggressive mechanisms that degrade automated readers, including full-screen consent walls, soft paywalls, obfuscated CSS-in-JS class names, zero-pixel honeypots, and Cloudflare Turnstile challenges. `dsh-jina` v1.0 implements multi-tiered countermeasures:
+Modern websites deploy aggressive mechanisms that degrade automated readers, including full-screen consent walls, soft paywalls, obfuscated CSS-in-JS class names, zero-pixel honeypots, and Cloudflare Turnstile challenges. `@martinm86867-ops/dsh-jina` v1.0 implements multi-tiered countermeasures:
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────┐
@@ -154,7 +154,7 @@ jina-tools:
 
 If your proxy client listens only on a loopback port (e.g. Clash, v2ray, Surge) without modifying the system proxy or injecting `HTTP_PROXY`, outbound requests will bypass it unless configured.
 
-`dsh-jina` resolves proxies using a deterministic 5-level precedence ladder:
+`@martinm86867-ops/dsh-jina` resolves proxies using a deterministic 5-level precedence ladder:
 
 $$\text{Tool-level Parameter Override} \succ \text{Settings Card } (proxyUrl) \succ \text{JINA\_PROXY\_URL} \succ \text{WinINET Registry} \succ \text{Startup Environment}$$
 
@@ -175,7 +175,7 @@ dsh restart
 ```
 
 ### Configure Credentials
-1. Navigate to the Web UI $\to$ **Plugins** $\to$ **Installed** $\to$ **dsh-jina**.
+1. Navigate to the Web UI $\to$ **Plugins** $\to$ **Installed** $\to$ **`@martinm86867-ops/dsh-jina`**.
 2. Under **Jina Tools**, enter your API key (obtain a free key with 10M tokens from [jina.ai](https://jina.ai/)).
 3. Click **Save**. The key is stored in DSH's native credential store (`JINA_API_KEY`).
 4. Optionally configure a **Local Proxy** address (e.g. `http://127.0.0.1:7897`) and adjust your preferred extraction preset.
@@ -205,7 +205,7 @@ npm test
 ```
 jina-web-search-dsh-plugin/
 ├── package.json       # Manifest: bundle composition & client module exports
-├── cordis.patch.yml   # Cordis composition patch inserting dsh-jina row
+├── cordis.patch.yml   # Cordis composition patch inserting the @martinm86867-ops/dsh-jina row
 ├── index.js           # Host plugin: 16 tools, Cloudflare auto-bypass, attachments
 ├── proxy.js           # Pure module: proxy precedence, presets, Schemastery schema
 ├── primer.js          # Pure module: diagnostic primer formatting
