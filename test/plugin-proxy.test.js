@@ -26,7 +26,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
-import { apply } from '../index.js'
+import { apply, Config } from '../index.js'
 
 /** Every environment name that can influence proxy selection. */
 const ENV_KEYS = [
@@ -56,11 +56,11 @@ async function withEnv(env, fn) {
 }
 
 /** A subprocess handle shaped like the seam's: `done` + `collected.*.readFrom`. */
-function fakeHandle(text, stderr = '') {
+function fakeHandle(text, stderr = '', lossy = undefined) {
   return {
     done: Promise.resolve({ exitCode: 0 }),
     collected: {
-      stdout: { readFrom: () => ({ text }) },
+      stdout: { readFrom: () => (lossy === undefined ? { text } : { text, lossy: true, spillPath: lossy.spillPath }) },
       stderr: { readFrom: () => ({ text: stderr }) },
     },
   }
@@ -111,6 +111,12 @@ const REG_SYSTEM_PROXY_ON = '    ProxyEnable    REG_DWORD    0x1\r\n    ProxySer
 
 /**
  * Build a fake host context plus the records each assertion needs.
+ *
+ * The plugin's settings now arrive as the loader entry's `Config`: `apply` is
+ * called with the resolved config and reads the live value off `ctx.fiber`.
+ * There is deliberately no `settings` service here — a plugin that still tried
+ * to register a namespace would fail loudly instead of silently degrading.
+ *
  * @param options - `{ setting, regOutput, helperResults, live }`.
  */
 function createHost(options = {}) {
@@ -118,30 +124,21 @@ function createHost(options = {}) {
   const helpers = []
   const routes = new Map()
   const tools = new Map()
-  const settingsState = {
-    namespace: undefined,
-    schema: undefined,
-    value: options.setting === undefined ? {} : { proxyUrl: options.setting },
-  }
+  const config = options.setting === undefined ? {} : { proxyUrl: options.setting }
   const queue = [...(options.helperResults || [])]
   const state = { spawnError: undefined }
 
   const ctx = {
+    fiber: { config },
     get(key) {
       if (key === 'sandboxPolicy') return { workspaceRoot: 'C:\\ws' }
       return undefined
     },
     inject(keys, callback) {
       if (keys.includes('settings')) {
-        callback({
-          settings: {
-            register(ns, schema) {
-              settingsState.namespace = ns
-              settingsState.schema = schema
-              return { get: () => settingsState.value }
-            },
-          },
-        })
+        // The 0.2.1 settings service has no registrar; a plugin that injects
+        // it and calls `.register()` must blow up rather than pass silently.
+        callback({ settings: {} })
       }
       if (keys.includes('webServer')) {
         callback({ webServer: { register(route) { routes.set(route.path, route) } } })
@@ -149,7 +146,12 @@ function createHost(options = {}) {
     },
     fs: {
       async resolve(path) { throw new Error('ENOENT ' + path) },
-      async readText() { throw new Error('ENOENT') },
+      async readText(path) {
+        if (options.spillText !== undefined && options.spillPath !== undefined && path === options.spillPath) {
+          return options.spillText
+        }
+        throw new Error('ENOENT')
+      },
     },
     subprocess: {
       async resolveExecutable() { return options.nodePath || process.execPath },
@@ -173,13 +175,20 @@ function createHost(options = {}) {
           }
         }
         const next = queue.length > 0 ? queue.shift() : OK_DATETIME
-        return fakeHandle(next)
+        return options.lossy === true
+          ? fakeHandle(next, '', { spillPath: options.spillPath || 'C:\\spill\\helper.out' })
+          : fakeHandle(next)
       },
     },
     tools: { register(tool) { tools.set(tool.name, tool) } },
   }
 
-  return { ctx, execs, helpers, routes, tools, settingsState, state }
+  return { ctx, config, execs, helpers, routes, tools, state }
+}
+
+/** Mount the plugin the way the loader does: apply(ctx, resolvedConfig). */
+function mount(host) {
+  return apply(host.ctx, host.config)
 }
 
 /** Invoke one registered tool the way the tool seam does. */
@@ -202,19 +211,23 @@ async function callPrimerRoute(host) {
   return JSON.parse(state.body)
 }
 
-test('the host half serves the jina-tools namespace with the proxyUrl field', async () => {
+test('the jina-tools entry Config carries the proxyUrl field and reaches the transport', async () => {
   const host = createHost({ setting: 'http://127.0.0.1:7897' })
-  apply(host.ctx)
-  assert.equal(host.settingsState.namespace, 'jina-tools')
-  assert.deepEqual(host.settingsState.schema({ proxyUrl: 'http://127.0.0.1:7897' }), { proxyUrl: 'http://127.0.0.1:7897' })
-  assert.equal(host.settingsState.schema.toJSON().dict.proxyUrl.type, 'string')
+  mount(host)
+  // The module-level Config IS the namespace: the settings service projects it
+  // into the card's form, and Cordis validates the entry against it.
+  assert.deepEqual(Config({ proxyUrl: 'http://127.0.0.1:7897' }), { proxyUrl: 'http://127.0.0.1:7897' })
+  assert.equal(Config.toJSON().dict.proxyUrl.type, 'string')
+  assert.equal(Config.meta.volatile, true, 'the section must be live-editable')
+  assert.equal(typeof Config['~standard'].validate, 'function', 'Cordis validates through Standard Schema')
+  assert.deepEqual(Config['~standard'].validate(undefined), { value: {} })
   assert.ok(host.tools.has('jina_web_search'), 'the tool surface still registers')
 })
 
 test('a saved manual proxy reaches the spawned helper and skips WinINET discovery', async () => {
   await withEnv({}, async () => {
     const host = createHost({ setting: 'http://127.0.0.1:7897', regOutput: REG_SYSTEM_PROXY_OFF })
-    apply(host.ctx)
+    mount(host)
     await callTool(host, 'jina_datetime', { url: 'https://example.com' })
     assert.equal(host.helpers.length, 1)
     assert.equal(host.execs.length, 1, 'no reg.exe probe while a manual address exists')
@@ -231,7 +244,7 @@ test('a saved manual proxy reaches the spawned helper and skips WinINET discover
 test('a bare host:port is normalized before it reaches the helper', async () => {
   await withEnv({}, async () => {
     const host = createHost({ setting: '127.0.0.1:7897' })
-    apply(host.ctx)
+    mount(host)
     await callTool(host, 'jina_datetime', { url: 'https://example.com' })
     assert.equal(host.helpers[0].env.HTTPS_PROXY, 'http://127.0.0.1:7897')
   })
@@ -240,7 +253,7 @@ test('a bare host:port is normalized before it reaches the helper', async () => 
 test('the manual address outranks WinINET discovery, JINA_PROXY_URL and the inherited environment', async () => {
   await withEnv({ JINA_PROXY_URL: 'http://127.0.0.1:1080', HTTPS_PROXY: 'http://127.0.0.1:3128' }, async () => {
     const host = createHost({ setting: 'http://127.0.0.1:7897', regOutput: REG_SYSTEM_PROXY_ON })
-    apply(host.ctx)
+    mount(host)
     await callTool(host, 'jina_datetime', { url: 'https://example.com' })
     assert.equal(host.helpers[0].env.HTTPS_PROXY, 'http://127.0.0.1:7897')
     assert.equal(host.execs.length, 1, 'discovery is not even consulted')
@@ -250,7 +263,7 @@ test('the manual address outranks WinINET discovery, JINA_PROXY_URL and the inhe
 test('JINA_PROXY_URL covers profiles without a settings provider', async () => {
   await withEnv({ JINA_PROXY_URL: 'http://127.0.0.1:1080' }, async () => {
     const host = createHost({ regOutput: REG_SYSTEM_PROXY_ON })
-    apply(host.ctx)
+    mount(host)
     await callTool(host, 'jina_datetime', { url: 'https://example.com' })
     assert.equal(host.helpers[0].env.HTTPS_PROXY, 'http://127.0.0.1:1080')
   })
@@ -259,7 +272,7 @@ test('JINA_PROXY_URL covers profiles without a settings provider', async () => {
 test('without a manual address the WinINET system proxy still wins (0.5.3 behavior preserved)', async () => {
   await withEnv({ HTTPS_PROXY: 'http://127.0.0.1:3128' }, async () => {
     const host = createHost({ regOutput: REG_SYSTEM_PROXY_ON })
-    apply(host.ctx)
+    mount(host)
     await callTool(host, 'jina_datetime', { url: 'https://example.com' })
     assert.equal(host.helpers[0].env.HTTPS_PROXY, 'http://127.0.0.1:7890')
     assert.equal(host.execs.length, 2, 'reg.exe was probed')
@@ -269,7 +282,7 @@ test('without a manual address the WinINET system proxy still wins (0.5.3 behavi
 test('with no proxy configured anywhere the helper inherits the harness environment untouched', async () => {
   await withEnv({}, async () => {
     const host = createHost({ regOutput: REG_SYSTEM_PROXY_OFF })
-    apply(host.ctx)
+    mount(host)
     await callTool(host, 'jina_datetime', { url: 'https://example.com' })
     assert.equal(host.helpers[0].env, undefined, 'undefined env = the seam keeps its resolved base')
   })
@@ -278,7 +291,7 @@ test('with no proxy configured anywhere the helper inherits the harness environm
 test('a transport failure names the manually configured proxy', async () => {
   await withEnv({}, async () => {
     const host = createHost({ setting: 'http://127.0.0.1:7999', helperResults: [TRANSPORT_FAILURE, TRANSPORT_FAILURE] })
-    apply(host.ctx)
+    mount(host)
     const text = await callTool(host, 'jina_datetime', { url: 'https://example.com' })
     assert.match(text, /http:\/\/127\.0\.0\.1:7999/)
     assert.match(text, /本地代理/)
@@ -293,7 +306,7 @@ test('an unusable saved address is reported and falls back to automatic detectio
       regOutput: REG_SYSTEM_PROXY_OFF,
       helperResults: [TRANSPORT_FAILURE, TRANSPORT_FAILURE],
     })
-    apply(host.ctx)
+    mount(host)
     const text = await callTool(host, 'jina_datetime', { url: 'https://example.com' })
     assert.match(text, /socks5:\/\/127\.0\.0\.1:7897/)
     assert.match(text, /已回退到自动检测/)
@@ -304,7 +317,7 @@ test('an unusable saved address is reported and falls back to automatic detectio
 test('the primer route reports the proxy actually in play and what the card stored', async () => {
   await withEnv({}, async () => {
     const host = createHost({ setting: 'http://127.0.0.1:7897', helperResults: [OK_PRIMER] })
-    apply(host.ctx)
+    mount(host)
     const payload = await callPrimerRoute(host)
     assert.equal(payload.ok, true)
     assert.equal(payload.proxyConfigured, 'http://127.0.0.1:7897')
@@ -315,10 +328,20 @@ test('the primer route reports the proxy actually in play and what the card stor
   })
 })
 
+test('the JINA_API_KEY environment variable is a supported key source', async () => {
+  await withEnv({ JINA_API_KEY: 'env-test-key' }, async () => {
+    const host = createHost({ helperResults: [OK_PRIMER] })
+    mount(host)
+    const payload = await callPrimerRoute(host)
+    assert.equal(payload.keyFound, true)
+    assert.equal(payload.keyKind, 'env')
+  })
+})
+
 test('the primer route reports the automatic source when nothing is saved', async () => {
   await withEnv({}, async () => {
     const host = createHost({ regOutput: REG_SYSTEM_PROXY_ON, helperResults: [OK_PRIMER] })
-    apply(host.ctx)
+    mount(host)
     const payload = await callPrimerRoute(host)
     assert.equal(payload.proxyConfigured, '')
     assert.equal(payload.proxy.source, 'system')
@@ -329,7 +352,7 @@ test('the primer route reports the automatic source when nothing is saved', asyn
 test('the primer route stays honest when the probe fails', async () => {
   await withEnv({}, async () => {
     const host = createHost({ setting: 'http://127.0.0.1:7999', helperResults: [TRANSPORT_FAILURE, TRANSPORT_FAILURE] })
-    apply(host.ctx)
+    mount(host)
     const payload = await callPrimerRoute(host)
     assert.equal(payload.ok, false)
     assert.equal(payload.proxy.source, 'setting')
@@ -348,7 +371,7 @@ const liveProxy = process.env.JINA_LIVE_PROXY_URL || 'http://127.0.0.1:7897'
 test('live: the configured local proxy carries a real Jina request', { skip: live ? false : 'set JINA_LIVE_PROXY=1 to run' }, async (t) => {
   await withEnv({}, async () => {
     const host = createHost({ setting: liveProxy, live: true, regOutput: REG_SYSTEM_PROXY_OFF })
-    apply(host.ctx)
+    mount(host)
     const text = await callTool(host, 'jina_datetime', { url: 'https://example.com', json: true })
     if (host.state.spawnError !== undefined) {
       t.skip('child processes cannot be spawned here: ' + String((host.state.spawnError && host.state.spawnError.message) || host.state.spawnError))
@@ -365,5 +388,94 @@ test('live: the configured local proxy carries a real Jina request', { skip: liv
       d && (d.title || d.url),
       'expected a real Jina payload carried by ' + liveProxy + ', got: ' + text.slice(0, 400),
     )
+  })
+})
+
+// ---- oversized helper output (lossy in-memory window + spill file) ----------
+// The subprocess seam keeps a bounded window and spills the full bytes. A big
+// page used to arrive as a headless JSON fragment and surface as "helper output
+// not parseable"; the transport must recover the envelope from the spill file
+// and, when it cannot, say what actually happened.
+
+test('a lossy helper read is recovered from the spill file', async () => {
+  await withEnv({}, async () => {
+    const full = OK_DATETIME
+    const host = createHost({
+      lossy: true,
+      spillPath: 'C:\\spill\\helper.out',
+      // The in-memory window dropped the head: only the tail is retained.
+      helperResults: [full.slice(Math.floor(full.length / 2))],
+      spillText: full,
+    })
+    mount(host)
+    const text = await callTool(host, 'jina_datetime', { url: 'https://example.com' })
+    assert.match(text, /Example/, 'the spilled envelope must be parsed, not the fragment')
+  })
+})
+
+test('an unrecoverable lossy read names the window instead of a parse failure', async () => {
+  await withEnv({}, async () => {
+    const full = OK_DATETIME
+    const host = createHost({
+      lossy: true,
+      spillPath: 'C:\\spill\\helper.out',
+      // Both the first attempt and the transport-level retry lose the head.
+      helperResults: [full.slice(Math.floor(full.length / 2)), full.slice(Math.floor(full.length / 2))],
+      // No spillText: ctx.fs.readText throws, so nothing is recoverable.
+    })
+    mount(host)
+    const text = await callTool(host, 'jina_datetime', { url: 'https://example.com' })
+    assert.match(text, /exceeded the in-memory window/)
+    assert.doesNotMatch(text, /not parseable/)
+  })
+})
+
+// ---- target-selector relaxation ---------------------------------------------
+// The configured default target selector is an article-shaped list. Treating it
+// as a hard scope made every read of a page without such a container fail with
+// 422 ("No content available for URL … with target selector") — reproduced live
+// against https://example.com. A selector is a preference: relax it and say so.
+
+const MISSING_TARGET = JSON.stringify({
+  ok: false,
+  status: 422,
+  text: '{"code":422,"name":"AssertionFailureError","message":"No content available for URL https://example.com/ with target selector article, main"}',
+})
+const OK_READ = JSON.stringify({ ok: true, status: 200, text: 'Example Domain body text' })
+
+test('a target selector that matches nothing is relaxed instead of failing the read', async () => {
+  await withEnv({}, async () => {
+    const host = createHost({ helperResults: [MISSING_TARGET, OK_READ] })
+    mount(host)
+    const text = await callTool(host, 'jina_read', { url: 'https://example.com' })
+    assert.equal(host.helpers.length, 2, 'one scoped attempt plus one relaxed retry')
+    const first = JSON.parse(host.helpers[0].stdin)
+    const second = JSON.parse(host.helpers[1].stdin)
+    assert.ok(first.headers['X-Target-Selector'], 'the first attempt carries the configured default selector')
+    assert.equal('X-Target-Selector' in second.headers, false, 'the retry drops the scope')
+    assert.match(text, /Example Domain body text/)
+    assert.match(text, /matched nothing on this page/)
+  })
+})
+
+test('a screenshot never applies the read-oriented default selector', async () => {
+  await withEnv({}, async () => {
+    const host = createHost({ helperResults: [JSON.stringify({ ok: true, status: 200, text: '{"data":{"screenshot":"https://img.example/shot.png"}}' })] })
+    mount(host)
+    await callTool(host, 'jina_screenshot', { url: 'https://example.com', fullPage: true })
+    const sent = JSON.parse(host.helpers[0].stdin)
+    assert.equal('X-Target-Selector' in sent.headers, false, 'a frame capture is not scoped by the read defaults')
+    assert.equal(sent.headers['X-Return-Format'], 'pageshot')
+  })
+})
+
+test('an unrelated 422 is not mistaken for a selector miss', async () => {
+  await withEnv({}, async () => {
+    const host = createHost({ helperResults: [JSON.stringify({ ok: false, status: 422, text: '{"message":"bad json schema"}' })] })
+    mount(host)
+    const text = await callTool(host, 'jina_read', { url: 'https://example.com', targetSelector: 'article' })
+    assert.equal(host.helpers.length, 1, 'an unrelated 422 is returned as-is, with no relaxed retry')
+    assert.match(JSON.parse(host.helpers[0].stdin).headers['X-Target-Selector'], /article/)
+    assert.match(text, /Jina API error \(HTTP 422\)/)
   })
 })

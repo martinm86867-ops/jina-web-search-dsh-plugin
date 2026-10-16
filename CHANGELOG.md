@@ -2,6 +2,90 @@
 
 Full version history of `dsh-jina`.
 
+### 1.5.0
+
+- **feat** **Jina-optional hybrid & standalone operation for `jina_fact_check` and `jina_rank_archive`.**
+  - `jina_fact_check` now sets `needsKey: false` on the live-web probe so that when running without a Jina API key, it still returns the complete Archive.org documentary footprint, 4-axis anti-confirmation-bias triangulation, `T1` primary government/military citations, and local DuckDB warehouse evidence cards.
+  - `jina_rank_archive` now automatically falls back to `local-lexical-provenance (offline fallback)` when Jina Reranker is unauthenticated or unreachable, scoring candidates by lexical coverage plus provenance tier weighting (`T1: +0.25`, `T2: +0.15`, `T3: +0.10`).
+- **feat** **Automatic mounting of `@martinm86867-ops/dsh-archive-suite` (43 tools + `archivist-research-agent` skill).** When `dsh-archive-suite` is present alongside `dsh-jina`, `apply()` mounts all 43 Archive.org & Wayback Machine tools (`archive_epistemic_dossier`, `archive_forensic_compare`, `archive_fact_check`, `wayback_read`, `archive_iiif_image`, etc.) with idempotent duplicate guards.
+- **fix** `unified.js` interpreter resolution now prioritizes `/home/martin/dsh-plugins/dsh-archive-suite/.venv/bin/python`.
+
+### 1.4.0
+
+- **fix** **A configured target selector is a preference, not a gate.** The
+  "Balanced" preset's default target selector is an article-shaped list
+  (`article, main, [role="main"], …`), and it was applied as a hard scope to
+  every read. Reproduced live against `https://example.com`: `jina_read` and
+  `jina_screenshot` both failed with `422 AssertionFailureError: No content
+  available for URL … with target selector` on any page without an `<article>`.
+  A scoped call that fails this way is now retried once unscoped, and the
+  model-facing output names the selector that was dropped. An unrelated 422 is
+  never mistaken for a scope miss (covered by a test).
+- **fix** **`jina_screenshot` no longer applies the read-oriented default target
+  selector at all.** A capture is a frame, not an extraction: only an explicit
+  per-call `targetSelector` scopes it. This was the same 422 in its most
+  surprising form — a plain full-page screenshot of a simple page.
+- **fix** **The settings seam works on DSH 0.2.1.** The plugin called
+  `sctx.settings.register(namespace, schema, options)` inside a `try/catch`.
+  That API does not exist — the settings service (`SettingsForms`) derives one
+  form per ACTIVE loader entry from the module's `Config` export, keyed by the
+  entry id — so the call threw, the error was swallowed into the primer
+  payload, and the card rendered while controlling nothing: `proxyUrl` and every
+  per-tool default were ignored. The plugin now exports a module-level `Config`
+  for the `jina-tools` entry (`proxy.js` → `createSettingsSchema()`), `apply`
+  receives and reads the validated config (`ctx.fiber.config` first, so a card
+  write is live), and the dead injection is gone. Verified against the real
+  harness: `resolveConfig` validates the entry, `volatileForm` produces the
+  16-field form, `isVolatilePath` accepts a write, and a live boot reports the
+  saved proxy with `source: "setting"` and no `settingsError`.
+- **fix** **`unified.js` was missing from the published package.** `index.js`
+  imports it, `package.json.files[]` did not list it, so the tarball shipped 12
+  files without it and any registry install would have failed at import with
+  `ERR_MODULE_NOT_FOUND`. The list now carries `unified.js` and `CHANGELOG.md`,
+  and drops three files that never existed (`README.en.md`, `change-log.md`,
+  `change-log.en.md`).
+- **fix** **The schema envelope is cloned per call.** `new Schema(serialized)`
+  in the settings service assigns `meta`/`dict` by reference and walks them
+  destructively. Sharing the live objects meant the first `describe()` deleted
+  `meta.volatile`, after which `isVolatilePath()` returned false and every card
+  write was rejected as "not volatile". `toJSON()` now returns fresh copies;
+  a regression test deletes from an envelope and asserts the live schema keeps
+  its volatility.
+- **fix** **The archive half of `jina_fact_check` / `jina_rank_archive` could
+  never run.** `['/venv/bin/python', 'python3'].find(existsSync)` tests a
+  *relative* path for the bare name, so `existsSync('python3')` was always false
+  and `archiveAvailable()` reported the archivist missing on every machine, the
+  bridge sitting right there. The interpreter is now resolved properly
+  (`DSH_ARCHIVE_PYTHON` → known absolute locations → `PATH` lookup), the bridge
+  is the gate, and `resolvePython` never returns a bare command name.
+- **fix** **Oversized responses were reported as parse errors.** The subprocess
+  seam keeps a bounded in-memory window and spills the full bytes; the transport
+  ignored `lossy`/`spillPath`, so a large page surfaced as "helper output not
+  parseable" while the complete envelope sat on disk. Reads now recover from the
+  spill file, and an unrecoverable read says the output exceeded the in-memory
+  window instead.
+- **fix** **Legacy key files used Windows-only path joins** (`root + '\\' + …`),
+  producing dead candidates and noisy diagnostics on Linux; they now use
+  `path.join`. `JINA_API_KEY` in the environment is a supported source ahead of
+  the legacy files, and the missing-key message names it.
+- **fix** **The system-prompt section was in the wrong band and over budget.**
+  Order 110 sat between the persona prefix and `plan:policy`; it now sits at
+  2150, inside the documented `TOOL_*` band (1000–2900) and directly after the
+  built-in web-search/web-fetch guidance. The prose is down to the documented
+  1–5 line ceiling, and it no longer tells the model it has 16 tools.
+- **fix** The client bundle keeps a disposer for *both* slot registrations per
+  inject callback; previously only the second was returned, so the first leaked
+  across disable/HMR.
+- **docs** Tool counts corrected to 19 across the README, `cordis.patch.yml`
+  and the prompt section; the two archive tools are documented; the install
+  recipe no longer invents a `dsh restart` command; `.gitignore` keeps the
+  nested `dsh-docs/` playbook checkout (its own repository) out of this package,
+  and the API reference under `docs/` is tracked again.
+- **test** Suite grows from 110 to 124 cases: Config validation/volatility
+  contracts, spill recovery and its failure path, `JINA_API_KEY` resolution,
+  archivist interpreter resolution, and target-selector relaxation (including
+  the negative case that an unrelated 422 is never relaxed).
+
 ### 1.0.2
 
 - **chore** **Renamed the package to `@martinm86867-ops/dsh-jina`.** The unscoped name `dsh-jina` is already taken on npm by an unrelated project (`mouyase/dsh-jina`, "Jina MCP native plugin with proxy + tool allowlist support"), so the package could not be published under it. The DSH registration row in `cordis.patch.yml` and the `name` export in `index.js` moved with it, since the client-modules scan matches on an exact package name.

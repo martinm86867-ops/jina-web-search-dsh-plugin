@@ -2,10 +2,10 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 
-test('index.js exports jina_read_file and jina_fact_check', () => {
+test('index.js exports jina_read_file and jina_evidence_map', () => {
   const indexSource = readFileSync('/home/martin/dsh-plugins/jina-web-search-dsh-plugin/index.js', 'utf8')
   assert.match(indexSource, /name:\s*'jina_read_file'/)
-  assert.match(indexSource, /name:\s*'jina_fact_check'/)
+  assert.match(indexSource, /name:\s*'jina_evidence_map'/)
 })
 
 test('index.js jina_pdf supports preset, inlineFormula, and table', () => {

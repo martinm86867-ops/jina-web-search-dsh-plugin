@@ -1,5 +1,5 @@
 /**
- * Behavioural contract for jina_fact_check (TDD: written first, RED).
+ * Behavioural contract for jina_evidence_map (TDD: written first, RED).
  *
  * These tests pin the behaviour that the previous word-overlap heuristic got
  * wrong. The regression fixture is the single most diagnostic pair of claims:
@@ -8,7 +8,7 @@
  *   "Trump was inaugurated ... on 20 January 2025"       → SUPPORTED (specific)
  *
  * The old proxy returned TRUE for the first and FALSE for the second — an
- * inverse correlation between specificity and verdict. Any implementation
+ * inverse correlation between specificity and stance. Any implementation
  * that reproduces that inversion fails here.
  *
  * Network is never touched: evaluateGroundedResults() is pure, and the only
@@ -64,8 +64,12 @@ test('fact check: a dated, well-documented claim is SUPPORTED, not FALSE', () =>
     ),
   ]
   const v = evaluateGroundedResults(statement, envelope(results))
-  assert.equal(v.verdict, 'SUPPORTED', `expected SUPPORTED, got ${v.verdict} (coverage ${v.coverage})`)
-  assert.ok(v.confidence > 0.8, 'confidence must be computed from coverage, not a literal constant')
+  assert.ok(v.counts.states === 2, `expected both sources to state the claim, got ${JSON.stringify(v.counts)}`)
+  // The old assertion demanded a `confidence` percentage, which was literally
+  // the term-coverage ratio printed as a probability of truth. Coverage is
+  // asserted for what it is; the stance count for what it establishes.
+  assert.ok(v.termCoverage > 0.8, 'term coverage must be computed, not a literal constant')
+  assert.equal(v.counts.states, 2, 'both sources carry the claim')
 })
 
 test('fact check: specificity does NOT lower the verdict (inversion regression)', () => {
@@ -85,14 +89,14 @@ test('fact check: specificity does NOT lower the verdict (inversion regression)'
 
   // THE REGRESSION: the old proxy returned TRUE for the vague claim and FALSE
   // for the specific one. Both must now be supported.
-  assert.equal(vagueV.verdict, 'SUPPORTED')
-  assert.equal(specificV.verdict, 'SUPPORTED',
+  assert.ok(vagueV.counts.states > 0, 'a source carrying the vague claim must register as stating it')
+  assert.ok(specificV.counts.states > 0,
     'the specific claim must not be rejected merely for containing dates and figures')
 
   // The specific claim must not be penalised relative to the vague one.
-  assert.ok(specificV.confidence > 0.8, `specific confidence too low: ${specificV.confidence}`)
-  assert.ok(specificV.confidence >= vagueV.confidence - 0.25,
-    `specific claim must not be materially penalised (vague ${vagueV.confidence} vs specific ${specificV.confidence})`)
+  assert.ok(specificV.termCoverage > 0.8, `specific coverage too low: ${specificV.termCoverage}`)
+  assert.ok(specificV.termCoverage >= vagueV.termCoverage - 0.25,
+    `specific claim must not be materially penalised (vague ${vagueV.termCoverage} vs specific ${specificV.termCoverage})`)
 })
 
 // --- abstention is the default ---------------------------------------------
@@ -107,9 +111,9 @@ test('fact check: an unsettled contest yields UNKNOWN, never a fabricated verdic
         'The largest genocide scholars organization says Israel is committing genocide in Gaza.'),
     ]),
   )
-  assert.notEqual(v.verdict, 'REFUTED', 'the evidence in context contains no refutation of this claim')
+  assert.equal(v.counts.denies, 0, 'the evidence in context contains no denial of this claim')
   // Two bodies that disagree, or one body and no contest: never asserted as settled.
-  assert.ok(['UNKNOWN', 'MIXED'].includes(v.verdict), `expected abstention, got ${v.verdict}`)
+  assert.equal(v.counts.states, 0, `expected no source to state it, got ${JSON.stringify(v.counts)}`)
 })
 
 test('fact check: no relevant evidence yields UNKNOWN, not FALSE', () => {
@@ -120,8 +124,8 @@ test('fact check: no relevant evidence yields UNKNOWN, not FALSE', () => {
       supporting('Recipe collection', 'https://example.com/food', 'A simple pasta dish with garlic and olive oil.'),
     ]),
   )
-  assert.equal(v.verdict, 'UNKNOWN')
-  assert.ok(v.coverage < RELEVANCE_FLOOR, 'nothing should have cleared the relevance floor')
+  assert.equal(v.counts.states, 0)
+  assert.ok(v.termCoverage < RELEVANCE_FLOOR, 'nothing should have cleared the relevance floor')
 })
 
 test('fact check: absence of corroboration is not refutation', () => {
@@ -129,7 +133,7 @@ test('fact check: absence of corroboration is not refutation', () => {
     'A claim nobody has written about at all regarding obscure topic xyzzy',
     envelope([supporting('Unrelated page', 'https://example.com/x', 'Entirely different subject matter here.')]),
   )
-  assert.equal(v.verdict, 'UNKNOWN')
+  assert.equal(v.counts.states, 0)
 })
 
 // --- refutation requires an explicit refutation ----------------------------
@@ -142,7 +146,7 @@ test('fact check: a genuinely false claim is REFUTED only on explicit refutation
         'The claim that water boils at 50 degrees Celsius at sea level is false; water boils at 100 degrees Celsius at standard pressure.'),
     ]),
   )
-  assert.equal(v.verdict, 'REFUTED')
+  assert.ok(v.counts.denies > 0, 'an explicit refutation must register as a denial')
   assert.ok(v.refutation !== null)
 })
 
@@ -157,8 +161,8 @@ test('fact check: the word "false" alone in a quote does NOT trigger REFUTED', (
         'Windows 11 requires TPM 2.0 for installation. A common false claim is that TPM 2.0 is optional.'),
     ]),
   )
-  assert.notEqual(v.verdict, 'REFUTED', 'a negation word must not refute the claim it appears alongside')
-  assert.equal(v.verdict, 'SUPPORTED')
+  assert.equal(v.counts.denies, 0, 'a negation word must not deny the claim it appears alongside')
+  assert.ok(v.counts.states > 0, 'the source states the claim')
 })
 
 test('fact check: contradicting sources produce MIXED, not a one-sided verdict', () => {
@@ -169,7 +173,8 @@ test('fact check: contradicting sources produce MIXED, not a one-sided verdict',
       refuting('Independent review clears Widget X', 'https://example.com/b', 'The claim that widget x caused the failure of the system is false, according to the independent review.'),
     ]),
   )
-  assert.equal(v.verdict, 'MIXED')
+  assert.ok(v.counts.denies > 0 && (v.counts.states + v.counts.reports) > 0,
+    `sources must be recorded as disagreeing, got ${JSON.stringify(v.counts)}`)
 })
 
 // --- confidence must be computed, not hardcoded ----------------------------
@@ -207,9 +212,10 @@ test('fact check: formatted output always carries the evidence (no verdict-only)
       'The president of the United States is the head of state and head of government. Incumbent Donald Trump since January 20, 2025.'),
   ]))
   const text = formatGroundedVerdict(v, statement)
-  assert.match(text, /Verdict: SUPPORTED/)
+  assert.match(text, /STATE —/, 'the evidence class must be shown')
+  assert.match(text, /Quote:/, 'the supporting quote must be shown')
+  assert.doesNotMatch(text, /Verdict:/, 'no verdict may be rendered')
   assert.match(text, /https:\/\/en\.wikipedia\.org/)
-  assert.match(text, /Evidence & References:/)
 })
 
 // --- helpers ---------------------------------------------------------------
@@ -226,8 +232,13 @@ test('fact check: refutation detection ignores negations of a different claim', 
   assert.equal(findRefutation('A common claim that TPM 2.0 is optional is false.', 'Windows 11 requires TPM 2.0'), null)
   // ...but the same wording DOES refute when X is the claim under test.
   assert.equal(findRefutation('The claim that water boils at 50c is false.', 'Water boils at 50c'), 'is false')
-  // Unambiguous markers stand alone.
-  assert.equal(findRefutation('The claim has been debunked.', 'anything at all'), 'debunked')
+  // A marker does NOT stand alone. "The claim has been debunked" names no
+  // claim, so it refutes nothing in particular. Accepting such markers outright
+  // is what let an unrelated article containing "no evidence" refute any claim
+  // whose words it happened to share.
+  assert.equal(findRefutation('The claim has been debunked.', 'anything at all'), null)
+  // The same marker DOES refute when its own clause names the claim.
+  assert.equal(findRefutation('The claim that water boils at 50c has been debunked.', 'water boils at 50c'), 'debunked')
   assert.equal(findRefutation('The Earth is an oblate spheroid'), null)
   assert.equal(findRefutation('Water boils at 100 degrees Celsius'), null)
 })
@@ -250,8 +261,12 @@ test('fact check: a false figure is UNKNOWN even when every word matches', () =>
     supporting('Boiling point of water', 'https://example.org/bp',
       'Water boils at 100 degrees Celsius under standard pressure at sea level.'),
   ]))
-  assert.notEqual(v.verdict, 'SUPPORTED', 'term overlap must not corroborate a figure the evidence contradicts')
-  assert.equal(v.verdict, 'UNKNOWN')
+  // The sources carry the claim's wording, so they are recorded as stating it.
+  // What matters is that the differing figure is REPORTED rather than hidden:
+  // the old design folded this into an UNKNOWN verdict and lost the reason.
+  assert.ok(v.counts.states > 0, 'the wording does match the sources')
+  assert.deepEqual(v.figuresMissing, ['50'], 'the differing figure must be reported')
+  assert.match(v.caution, /figure\(s\) 50/)
 })
 
 test('fact check: a true figure IS corroborated when the evidence states it', () => {
@@ -259,7 +274,7 @@ test('fact check: a true figure IS corroborated when the evidence states it', ()
     supporting('Earth radius', 'https://en.wikipedia.org/wiki/Earth_radius',
       'The Earth equatorial radius is about 6378 kilometres, between the polar minimum of about 6,357 km and the equatorial maximum of about 6,378 km.'),
   ]))
-  assert.equal(v.verdict, 'SUPPORTED')
+  assert.ok(v.counts.states > 0, 'the evidence states the claim')
 })
 
 test('fact check: numeric values are extracted with separators normalised', () => {
@@ -278,13 +293,13 @@ test('fact check: a refutation in the title is detected despite typographic quot
     supporting('5 Reasons Why the Events in Gaza Are Not \u201cGenocide\u201d', 'https://example.com/y',
       'The modern-day Jewish state was created after the Nazis committed the genocide known as the Holocaust.'),
   ]))
-  assert.equal(v.verdict, 'MIXED', 'a headline disputing the claim must register as a refutation')
+  assert.ok(v.counts.denies > 0, 'a headline disputing the claim must register as a denial')
 })
 
 // --- the old heuristic must be gone ---------------------------------------
 
 test('fact check: the registry entry names the grounded evaluator', () => {
-  assert.match(INDEX_SRC, /jina_fact_check/)
+  assert.match(INDEX_SRC, /jina_evidence_map/)
   assert.match(INDEX_SRC, /evaluateGroundedResults/, 'index.js must route through the pure evaluator')
   assert.doesNotMatch(INDEX_SRC, /is inspired by/, 'the hardcoded directional carve-out must be removed')
 })

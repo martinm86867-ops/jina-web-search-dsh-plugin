@@ -181,3 +181,27 @@ test('createSettingsSchema: carries the dict/meta surface the settings service w
   // A fresh node per plugin instance: two profiles must not share one node.
   assert.notEqual(createSettingsSchema(), createSettingsSchema())
 })
+
+test('createSettingsSchema: toJSON hands out clones so a consumer walk cannot strip volatility', () => {
+  const schema = createSettingsSchema()
+  // The settings service rehydrates `toJSON()` and walks it destructively
+  // (`delete node.meta.volatile`). Sharing the live objects would leave the
+  // entry non-volatile after the first describe(), and every card write would
+  // then be rejected as "not volatile".
+  const envelope = schema.toJSON()
+  assert.notEqual(envelope.meta, schema.meta)
+  assert.notEqual(envelope.dict[PROXY_SETTING_FIELD].meta, schema.dict[PROXY_SETTING_FIELD].meta)
+  delete envelope.meta.volatile
+  delete envelope.dict[PROXY_SETTING_FIELD].meta.volatile
+  assert.equal(schema.meta.volatile, true, 'the live schema must survive the walk')
+  assert.equal(schema.toJSON().meta.volatile, true, 'and every later envelope must still be volatile')
+})
+
+test('createSettingsSchema: validates through the Standard Schema interface Cordis uses', () => {
+  const schema = createSettingsSchema()
+  assert.equal(schema['~standard'].version, 1)
+  assert.deepEqual(schema['~standard'].validate(undefined), { value: {} })
+  assert.deepEqual(schema['~standard'].validate({ proxyUrl: 'http://127.0.0.1:7890', unknown: 1 }), {
+    value: { proxyUrl: 'http://127.0.0.1:7890' },
+  })
+})

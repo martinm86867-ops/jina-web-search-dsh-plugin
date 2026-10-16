@@ -28,6 +28,7 @@ export const WEB_SEARCH_TOOL = {
       gl: { type: 'string', description: 'Country code, e.g. us, de, jp.' },
       hl: { type: 'string', description: 'Language code, e.g. en, zh-cn.' },
       json: { type: 'boolean', description: 'Return the raw JSON response instead of formatted results.' },
+      adversarial: { type: 'boolean', description: 'Force the adversarial research framework for this call (friction-first multi-vector search with triangulated ordering), overriding the Jina Tools settings toggle.' },
       apiKey: { type: 'string', description: 'Optional Jina API key override.' },
     },
     required: ['query'],

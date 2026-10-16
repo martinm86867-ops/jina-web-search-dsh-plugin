@@ -21,12 +21,25 @@ test('client bundle: card is keyed by the settings namespace the host serves', (
   assert.match(SOURCE, /NS\s*=\s*'jina-tools'/)
 })
 
-test('client bundle: registers plugins.bundle.config and plugins.row.config for dsh >= 0.1.6', () => {
-  assert.match(SOURCE, /name:\s*'plugins\.bundle\.config'/)
-  assert.match(SOURCE, /key:\s*'dsh-jina'/)
-  assert.match(SOURCE, /name:\s*'plugins\.row\.config'/)
-  assert.match(SOURCE, /key:\s*'dsh-jina#jina-tools'/)
+test('client bundle: registers plugins.bundle.config and plugins.row.config for both keys', () => {
+  // The registration helper takes the slot name, so the name/key constants are
+  // the literals under test; the `slots.register({ name, key })` shape is
+  // asserted separately.
+  assert.match(SOURCE, /registerBoth\('plugins\.bundle\.config'/)
+  assert.match(SOURCE, /registerBoth\('plugins\.row\.config'/)
+  assert.match(SOURCE, /slots\.register\(\{ name: name, key: scopedKey \}/)
+  assert.match(SOURCE, /'@martinm86867-ops\/dsh-jina'/)
+  assert.match(SOURCE, /'dsh-jina'/)
+  assert.match(SOURCE, /'@martinm86867-ops\/dsh-jina#jina-tools'/)
+  assert.match(SOURCE, /'dsh-jina#jina-tools'/)
   assert.match(SOURCE, /slotProps\.view === 'summary'/)
+})
+
+test('client bundle: keeps a disposer for every slot registration', () => {
+  // Cordis runs only the inject callback's return value on unload, so a second
+  // registration whose disposer is dropped leaks across disable/HMR.
+  assert.match(SOURCE, /function registerBoth\(name, scopedKey, unscopedKey\)/)
+  assert.match(SOURCE, /var disposers = \[/)
 })
 
 test('client bundle: injects the slots plane it consumes', () => {

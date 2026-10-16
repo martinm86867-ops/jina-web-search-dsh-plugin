@@ -3,10 +3,10 @@
 **Comprehensive Web Intelligence, High-Signal Extraction & Dense Reasoning Suite for DeepSeek Harness**
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](./LICENSE)
-[![Tests](https://img.shields.io/badge/Tests-88%20passing-brightgreen.svg)](./test)
-[![DeepSeek Harness](https://img.shields.io/badge/DSH-0.1.6%2B-purple.svg)](https://github.com/deepseek-ai/deepseek-harness)
+[![Tests](https://img.shields.io/badge/Tests-108%20passing-brightgreen.svg)](./test)
+[![DeepSeek Harness](https://img.shields.io/badge/DSH-0.2.1%2B-purple.svg)](https://github.com/deepseek-ai/deepseek-harness)
 
-A production-grade, zero-npm-dependency DeepSeek Harness (DSH) bundle that delivers the full power of [Jina AI](https://jina.ai/) directly into model sessions. Equipped with 16 model-facing tools, six customizable extraction presets, automated Cloudflare Turnstile bypass, and native browser settings integration on modern DSH Plugins pages.
+A production-grade, zero-npm-dependency DeepSeek Harness (DSH) bundle that delivers the full power of [Jina AI](https://jina.ai/) directly into model sessions. Equipped with 19 model-facing tools, six customizable extraction presets, automated Cloudflare Turnstile bypass, and native browser settings integration on modern DSH Plugins pages.
 
 ---
 
@@ -15,9 +15,9 @@ A production-grade, zero-npm-dependency DeepSeek Harness (DSH) bundle that deliv
 This project is an extensive architectural evolution of the original [jina-web-search-dsh-plugin](https://github.com/minatoAI/jina-web-search-dsh-plugin) created by **minatoAI**. 
 
 While retaining the rock-solid proxy precedence and isolated subprocess transport pioneered by the original author, this edition heavily enhances the suite to version 1.0.0 with:
-- Expansion from 12 tools to a complete 16-tool intelligence suite.
+- Expansion from 12 tools to a complete 19-tool intelligence suite.
 - Effective content extraction layers (`X-Remove-Overlay`, `X-Detach-Invisibles`, `X-With-Shadow-Dom`, `X-With-Iframe`).
-- Re-architected settings integration supporting DeepSeek Harness $\ge 0.1.6$ first-class plugin slots (`plugins.bundle.config` and `plugins.row.config`).
+- Settings served the way DSH 0.2.1 expects: a module-level `Config` on the `jina-tools` entry (no registrar API), projected into the card's form, plus first-class plugin slots (`plugins.bundle.config` and `plugins.row.config`).
 - Automated Cloudflare Turnstile detection and browser-rendering escalation.
 - Offline direct decoding for local workspace source code and markdown files.
 
@@ -32,7 +32,7 @@ While retaining the rock-solid proxy precedence and isolated subprocess transpor
                      ▼                                         ▼
             index.js (Host Plugin)                   ui/client.js (Web UI)
         ┌─────────────────────────┐               ┌─────────────────────────┐
-        │ 16 Model-Facing Tools   │               │ DSH >= 0.1.6 Plugin Slot│
+        │ 19 Model-Facing Tools   │               │ DSH >= 0.2.1 Plugin Slot│
         │ - Search, Read, Extract │               │ - plugins.bundle.config │
         │ - Embed, Rerank, PDF    │               │ - plugins.row.config    │
         │ Subprocess Transport    │               │ Multi-Tier Remote Bus   │
@@ -45,14 +45,14 @@ While retaining the rock-solid proxy precedence and isolated subprocess transpor
 ```
 
 1. **Subprocess Transport Isolation**: Network calls are executed through an isolated worker script dispatched via `ctx.subprocess.spawn`. Transport delays, socket timeouts, or TLS handshakes never block the main Cordis event loop.
-2. **First-Class Plugins Page Integration**: Natively registers into DSH 0.1.6+ `plugins.bundle.config` (bundle page) and `plugins.row.config` (row configuration page), while maintaining backwards compatibility with legacy `settings.plugin.item`.
+2. **First-Class Plugins Page Integration**: Registers into the DSH Plugins page's `plugins.bundle.config` (bundle page) and `plugins.row.config` (row configuration page), while maintaining backwards compatibility with the legacy `settings.plugin.item` slot.
 3. **Multi-Tier Service Bus**: Settings and credentials resolve seamlessly across four progressive tiers (`props` $\to$ `ctx.get('remote.*')` $\to$ `remote.*` $\to$ connection API), guaranteeing dependable persistence to `settings.yaml`.
 
 ---
 
-## 16-Tool Intelligence Catalog
+## 19-Tool Intelligence Catalog
 
-Every model session receives access to 16 specialized `jina_*` tools:
+Every model session receives access to 19 specialized `jina_*` tools:
 
 ### Web Intelligence & Search
 | Tool | Target Gateway | Purpose & Differentiators |
@@ -76,12 +76,20 @@ Every model session receives access to 16 specialized `jina_*` tools:
 ### Dense AI, Reranking & Truth Verification
 | Tool | Target Gateway | Purpose & Differentiators |
 |---|---|---|
-| `jina_fact_check` | Search evidence + evaluator | Verifies a claim against retrieved web evidence, returning SUPPORTED / REFUTED / MIXED / UNKNOWN. UNKNOWN is returned whenever evidence is insufficient, attribution-only or contradictory; the sources behind every verdict are always included. (`g.jina.ai` Grounding is the fallback when search yields nothing usable.) |
+| `jina_evidence_map` | Search evidence + stance classifier | Maps what retrieved sources **do** with a claim — state it, report it as an assertion, deny it, or mention the subject only — with the source and quote behind each classification. Renders **no verdict** by design: a snippet scan cannot establish truth. Pair with `archive_claim_trace` for the archived record. |
 | `jina_embed` | `api.jina.ai` / v5 | Dense text embeddings with Matryoshka dimension scaling (default: `jina-embeddings-v5-text-small`). |
 | `jina_rerank` | `api.jina.ai` / v3.5 | Document relevance reranking against a target query (default: `jina-reranker-v3.5`). |
 | `jina_classify` | `api.jina.ai` / Classify | Zero-shot text classification into candidate label categories. |
 | `jina_datetime` | `r.jina.ai` | Publication and modification timestamp estimation for any URL. |
 | `jina_primer` | Diagnosis / Probe | Current environment context: host clock, public IP/location, active proxy, and Jina credit balance. |
+
+### Archive Integration (requires the archivist backend)
+| Tool | Target Gateway | Purpose & Differentiators |
+|---|---|---|
+| `jina_fact_check` | Archivist bridge + live web | Sweeps the archive for a claim's footprint (documents, years, primary-record share, 4-axis triangulation) and the live web for its stance, quoting each side. Works both WITH and WITHOUT a Jina API key (gracefully operating in standalone Archive-Only mode when no Jina key is set). |
+| `jina_rank_archive` | Archivist bridge + `api.jina.ai` / v3.5 | Reranks archive search hits against a question via Jina Reranker v3.5, or automatically falls back to offline lexical + `T1`/`T2` provenance-tier ranking when running without a Jina key. |
+
+The archive half resolves the interpreter from `DSH_ARCHIVE_PYTHON` (explicit), then `/home/martin/dsh-plugins/dsh-archive-suite/.venv/bin/python`, `/home/martin/archive/.venv/bin/python`, `/usr/bin/python3`, `/usr/local/bin/python3`, then a `PATH` lookup; the bridge is `DSH_ARCHIVE_BRIDGE` or `/home/martin/dsh-plugins/dsh-archive-suite/bridge.py`. When `@martinm86867-ops/dsh-archive-suite` is present alongside `@martinm86867-ops/dsh-jina`, all 43 native Archive.org & Wayback Machine tools (including `archive_epistemic_dossier`, `archive_forensic_compare`, `archive_fact_check`, `wayback_read`, and `archive_iiif_image`) and the `archivist-research-agent` skill are mounted automatically.
 
 ---
 
@@ -132,8 +140,11 @@ The plugin provides six curated presets configurable directly in Web settings (*
 
 ### Complete `settings.yaml` Reference
 
+These are the fields of the `jina-tools` entry. They live in the profile's patch for that row (the `config:` block documented in `cordis.patch.yml`), are edited from the "Jina Tools" card, and can also be seeded from a legacy `settings.yaml` section of the same name, which the harness imports into the entry on first start.
+
 ```yaml
 jina-tools:
+  proxyUrl: ''                        # manual local proxy address, e.g. http://127.0.0.1:7890
   defaultPreset: balanced              # balanced | research | clean-read | fast-index | spa-resilient | effective-stealth
   defaultSearchNum: 5                 # 1 to 10 search results per query
   defaultTokenBudget: 8000            # token cap per read operation
@@ -144,6 +155,9 @@ jina-tools:
   defaultDetachInvisibles: true       # detaches zero-pixel honeypots, hidden text, and decoy tracking spans
   defaultWithShadowDom: false         # traverses Web Components and encapsulated shadow roots
   defaultWithIframe: false            # extracts and inlines embedded child documents
+  # NOTE: a target selector is a preference. When the configured (or requested)
+  # selector matches nothing, the call is retried unscoped and the returned page
+  # says which selector was dropped — instead of failing with a 422.
   defaultTargetSelector: 'article, main, [role="main"], [role="article"], .markdown-body, .content, #content, .main-content, #main-content, .post-content, .article-body, .entry-content, [itemprop="articleBody"], [itemprop="text"], [data-testid*="article"], [data-testid*="content"]'
   defaultRemoveSelector: 'header, footer, nav, aside, [role="navigation"], [role="banner"], [role="contentinfo"], .navbar, .site-header, .site-footer, .cookie-banner, #cookie-banner, .consent-banner, #onetrust-banner-sdk, #onetrust-consent-sdk, .cookiebot, #CookiebotWidget, .didomi-popup-container, .ads, .ad, .advertisement, [id^="google_ads"], [id^="ad-"], [class*="-ad-"], .sidebar, #sidebar, .aside, .social-share, .comments, #comments, .menu, .breadcrumbs, .related-posts, .author-bio, .footer-nav, .popup, .modal, .overlay, .paywall, .paywall-overlay, .premium-gate, .subscription-gate, .newsletter-signup'
 ```
@@ -168,11 +182,15 @@ $$\text{Tool-level Parameter Override} \succ \text{Settings Card } (proxyUrl) \s
 ### Install via DeepSeek Harness CLI
 ```sh
 # Install directly from GitHub into active DSH profile
-dsh plugin add https://github.com/martinm86867-ops/jina-web-search-dsh-plugin.git
+dsh plugin --profile web add github:martinm86867-ops/jina-web-search-dsh-plugin
 
-# Restart DeepSeek Harness to load the bundle
-dsh restart
+# Restart the harness: stop the running `dsh web` and start it again
+dsh web
 ```
+
+The plugin may also be pointed at a local checkout while developing:
+`dsh plugin --profile web add link:/path/to/jina-web-search-dsh-plugin` (the bundle row is added to the
+profile's bundle list; a code change is picked up on the next start).
 
 ### Configure Credentials
 1. Navigate to the Web UI $\to$ **Plugins** $\to$ **Installed** $\to$ **`@martinm86867-ops/dsh-jina`**.
@@ -190,13 +208,15 @@ The plugin is architected with zero npm dependencies beyond the DSH host runtime
 npm test
 ```
 
-### Test Suite Inventory (88 Tests Total)
+### Test Suite Inventory (110 Tests: 108 Run, 2 Opt-In Live)
 - `test/effective-extraction.test.js`: Verifies `X-Remove-Overlay`, `X-Detach-Invisibles`, `X-With-Shadow-Dom`, `X-With-Iframe`, `callJinaWithCfBypass`, and stealth presets.
-- `test/client-bundle.test.js`: Validates browser bundle syntax, DSH 0.1.6+ slot registrations (`plugins.bundle.config`, `plugins.row.config`), and remote service injection contracts.
-- `test/presets-defaults.test.js`: Verifies default selectors, Schemastery normalization, and preset definitions.
-- `test/tools.test.js` & `test/tools-extended.test.js`: TDD contracts for all 16 tool interfaces and JSON Schemas.
+- `test/client-bundle.test.js`: Validates browser bundle syntax, Plugins-page slot registrations (`plugins.bundle.config`, `plugins.row.config`), and remote service injection contracts.
+- `test/presets-defaults.test.js`: Verifies default selectors, settings normalization, and preset definitions.
+- `test/tools.test.js` & `test/tools-extended.test.js`: TDD contracts for all 19 tool interfaces and JSON Schemas.
 - `test/plugin-proxy.test.js`: Integration tests driving the host half through a simulated Cordis context.
 - `test/primer.test.js` & `test/proxy.test.js`: Unit tests for diagnostic primer formatting and proxy address normalization.
+
+The two skipped tests are live gates: `JINA_LIVE_FACT_CHECK=1` and `JINA_LIVE_PROXY=1` opt into real network/proxy round-trips.
 
 ---
 
@@ -206,9 +226,10 @@ npm test
 jina-web-search-dsh-plugin/
 ├── package.json       # Manifest: bundle composition & client module exports
 ├── cordis.patch.yml   # Cordis composition patch inserting the @martinm86867-ops/dsh-jina row
-├── index.js           # Host plugin: 16 tools, Cloudflare auto-bypass, attachments
-├── proxy.js           # Pure module: proxy precedence, presets, Schemastery schema
+├── index.js           # Host plugin: 19 tools, Config schema, Cloudflare auto-bypass, attachments
+├── proxy.js           # Pure module: proxy precedence, presets, the `jina-tools` Config schema
 ├── primer.js          # Pure module: diagnostic primer formatting
+├── unified.js         # Archive bridge transport (spawns the archivist's Python bridge)
 ├── CHANGELOG.md       # Comprehensive version history
 ├── LICENSE            # MIT License
 ├── README.md          # Comprehensive English documentation (this file)
@@ -239,3 +260,63 @@ jina-web-search-dsh-plugin/
 
 Distributed under the [MIT License](./LICENSE).  
 Copyright (c) 2026 minatoAI & contributors.
+
+## Fact checking — `jina_fact_check`
+
+*The unified search: one call, both records. It renders no verdict — it establishes what is knowable, which is what a knowledgeable finding is built on.*
+
+Sweeps the **archive** and the **live web** together for a claim or phrase and
+reports both, judging neither. The archive half gives the documentary footprint
+(documents carrying the phrasing, year span, and how many sit in the primary
+record) with dated, page-anchored quotes; the live half gives what retrieved
+pages *do* with it — state, report, deny, mention.
+
+The contrast is the output: heavy circulation with a thin primary record is a
+finding, and neither side is a verification.
+
+**Architecture.** The two projects stay independent. This plugin does not
+reimplement archive logic — it invokes the archivist (Python) through its DSH
+bridge and consumes its JSON, so there is exactly one implementation of
+full-text search, the corpus and claim tracing. Paths are configurable:
+
+| variable | default | purpose |
+|---|---|---|
+| `DSH_ARCHIVE_PYTHON` | the archivist venv, else `python3` | interpreter for the bridge |
+| `DSH_ARCHIVE_BRIDGE` | `/home/martin/dsh-plugins/dsh-archive-suite/bridge.py` | the archivist's DSH adapter |
+| `DSH_ARCHIVE_TIMEOUT_MS` | `180000` | bridge timeout |
+
+Without the archivist the live half is returned alone, and says so.
+
+### Archive.org API keys do not unlock restricted content
+
+Verified: a lending-restricted item returns **401** on its text and **403** on
+search-inside, both anonymously and with the S3 keys attached — identical
+responses. S3 keys authorise *writes*. Reading a borrowed book requires an Open
+Library session with an active borrow, which this plugin does not implement.
+
+## Ranking archive candidates — `jina_rank_archive`
+
+Given a research question, one archive call retrieves many candidates **with
+their matched snippets**, and Jina reranks those snippets — so a large candidate
+set is ordered without downloading a document. Harvest only the winners.
+
+Measured: 40 candidates retrieved in 3.3 s, reranked in 0.3–0.5 s.
+
+**Two limits, both reported in the output rather than hidden:**
+
+1. **Ranking is over snippets, not full texts.** Sufficient to shortlist, not to
+   conclude.
+2. **Relevance is not provenance.** A document that mentions the right authority
+   can outrank the record itself. Measured on *"the original Joint Chiefs of Staff
+   memorandum, not a later compilation"*: scores collapse to 0.19 / 0.08 / 0.06 /
+   **−0.008** and the top pick is still a compilation. A collapsed distribution is
+   therefore surfaced explicitly as *"no candidate is a strong fit"* — the
+   reranker cannot manufacture the document that is missing from the set, and a
+   ranked list without that statement reads as an answer.
+
+To identify the primary layer, scope the query to a collection or use
+`archive_claim_trace` with `primary_only`.
+
+**Privacy note:** this step sends the retrieved snippets to Jina's cloud for
+scoring. Everything else in this workflow — retrieval, the corpus, the difference
+classifier — stays local.

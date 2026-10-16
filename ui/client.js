@@ -1150,16 +1150,30 @@ function jinaClientFactory(require) {
         })
       }
 
+      // Both the scoped and the pre-rename unscoped key are registered so the
+      // card mounts on either Plugins-page dispatch; the disposers are combined
+      // because an inject callback's return value is the ONLY thing Cordis can
+      // run on unload — returning just the last one leaks the first.
+      function registerBoth(name, scopedKey, unscopedKey) {
+        var disposers = [
+          slots.register({ name: name, key: scopedKey }, renderCard),
+          slots.register({ name: name, key: unscopedKey }, renderCard),
+        ]
+        return function () {
+          for (var i = 0; i < disposers.length; i++) {
+            if (typeof disposers[i] === 'function') disposers[i]()
+          }
+        }
+      }
+
       // 1. Bundle-level configuration for the new Plugins page (keys: '@martinm86867-ops/dsh-jina' and 'dsh-jina')
       ctx.slots.inject('plugins.bundle.config', function () {
-        slots.register({ name: 'plugins.bundle.config', key: '@martinm86867-ops/dsh-jina' }, renderCard)
-        return slots.register({ name: 'plugins.bundle.config', key: 'dsh-jina' }, renderCard)
+        return registerBoth('plugins.bundle.config', '@martinm86867-ops/dsh-jina', 'dsh-jina')
       })
 
       // 2. Row-level configuration for the jina-tools row (keys: '@martinm86867-ops/dsh-jina#jina-tools' and 'dsh-jina#jina-tools')
       ctx.slots.inject('plugins.row.config', function () {
-        slots.register({ name: 'plugins.row.config', key: '@martinm86867-ops/dsh-jina#jina-tools' }, renderCard)
-        return slots.register({ name: 'plugins.row.config', key: 'dsh-jina#jina-tools' }, renderCard)
+        return registerBoth('plugins.row.config', '@martinm86867-ops/dsh-jina#jina-tools', 'dsh-jina#jina-tools')
       })
 
       // 3. Legacy Settings section slot (key: 'jina-tools') for earlier dsh versions

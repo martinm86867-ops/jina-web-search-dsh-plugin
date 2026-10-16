@@ -1,6 +1,6 @@
 {
   "name": "@martinm86867-ops/dsh-jina",
-  "version": "1.0.2",
+  "version": "1.5.0",
   "description": "Jina AI tools for DeepSeek Harness: search (incl. arxiv/ssrn academic domains), read, screenshot, embed, rerank, classify, pdf, expand, datetime, primer \u2014 with a settings-page API key UI and a manually configurable local proxy.",
   "type": "module",
   "main": "index.js",
@@ -18,14 +18,13 @@
     "ui/package.json",
     "ui/client.js",
     "README.md",
-    "README.en.md",
-    "change-log.md",
-    "change-log.en.md",
+    "CHANGELOG.md",
     "LICENSE",
     "primer.js",
     "proxy.js",
     "tool-contracts.js",
-    "eval-grounded.js"
+    "eval-grounded.js",
+    "unified.js"
   ],
   "dsh": {
     "bundle": {

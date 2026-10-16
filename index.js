@@ -1,7 +1,7 @@
 /**
  * dsh-jina — Jina AI tools for DeepSeek Harness.
  *
- * Host plugin: registers the twelve jina_* model tools mirroring jina-cli
+ * Host plugin: registers the nineteen jina_* model tools mirroring jina-cli
  * (search — with dedicated jina_search_arxiv / jina_search_ssrn academic
  * shortcuts so the model can hit the right domain without remembering the
  * `type` parameter — / read / screenshot / datetime / expand / embed /
@@ -9,18 +9,22 @@
  * under the reference `JINA_API_KEY` — the "Jina Tools" web settings page
  * writes it through `credentials.set`, and this plugin resolves it per
  * operation (the seam's contract: never cache across operations). The web
- * settings pairing: this host half serves the `jina-tools` settings
- * namespace — whose `proxyUrl` field carries a manually configured local
- * proxy address — and the browser half registers its card for that namespace,
- * so the Settings → Plugins tab (Settings → Plugins → Configure) renders the
- * card only when the two halves agree.
+ * settings pairing: this host half exports the `Config` the loader entry
+ * `jina-tools` is validated against, and the browser half registers its card
+ * for that namespace, so the Settings → Plugins tab (Settings → Plugins →
+ * Configure) renders the card only when the two halves agree.
  *
  * The API key is resolved per call in this order:
  *   1. the tool's own `apiKey` parameter,
  *   2. the `JINA_API_KEY` credential (set from the web settings page,
  *      persisted by the host credential provider, e.g. `.credentials.yaml`),
- *   3. `jina-api-key.txt` in the calling session's workspace,
- *   4. `jina-api-key.txt` in the dsh home directory (`$DSH_HOME` or `~/.dsh`).
+ *   3. the `JINA_API_KEY` environment variable (preset-free/headless profiles),
+ *   4. `jina-api-key.txt` in the calling session's workspace (legacy),
+ *   5. `jina-api-key.txt` in the dsh home directory (`$DSH_HOME` or `~/.dsh`, legacy).
+ *
+ * The two file steps are a compatibility fallback for deployments that
+ * predate the credential seam; the settings card and the environment variable
+ * are the supported paths.
  *
  * Network transport: the Jina endpoints are contacted through a small
  * `node -e` fetch helper spawned via the host `subprocess` service. The
@@ -40,16 +44,34 @@
  */
 
 import { homedir } from 'node:os'
-import { resolve, isAbsolute } from 'node:path'
+import { resolve, join, isAbsolute } from 'node:path'
 import { buildPrimer, formatPrimer, parseIpInfo, parseJinaRoot } from './primer.js'
 import {
-  PROXY_ENV_VAR, SETTINGS_NAMESPACE,
+  PROXY_ENV_VAR,
   createSettingsSchema, describeRejectReason, proxySettingOf, selectProxy, toolSettingsOf,
 } from './proxy.js'
 import { WEB_SEARCH_TOOL } from './tool-contracts.js'
 import { evaluateGroundedResults, formatGroundedVerdict } from './eval-grounded.js'
+import { archiveCall, archiveAvailable, ARCHIVE_TIMEOUT_MS } from './unified.js'
+import { apply as applyArchiveSuite } from '../dsh-archive-suite/index.js'
 
 export const name = '@martinm86867-ops/dsh-jina'
+
+/**
+ * The `jina-tools` loader entry's Config — the plugin's whole configuration
+ * surface, validated by Cordis before `apply` runs and projected into the
+ * "Jina Tools" settings form by the settings service.
+ *
+ * It is a module-level export on purpose: Cordis reads `plugin.Config` when it
+ * registers the runtime (`vendor/cordis/src/registry.ts`) and validates every
+ * entry config through `Config['~standard'].validate()`; the settings service
+ * derives the editable form from the same object. A plugin cannot *register* a
+ * namespace — the namespace is this entry's id.
+ *
+ * @see proxy.js `createSettingsSchema()` for the node's shape and the two
+ *   runtime contracts it satisfies.
+ */
+export const Config = createSettingsSchema()
 
 export const inject = ['fs', 'subprocess', 'tools']
 
@@ -91,7 +113,7 @@ export const HTTP_HELPER_SCRIPT = [
   "})",
 ].join('\n')
 
-export function apply(ctx) {
+export function apply(ctx, config) {
   const READER = 'https://r.jina.ai/'
   const IPINFO = 'https://ipinfo.io/json'
   const SEARCH = 'https://svip.jina.ai/'
@@ -106,10 +128,25 @@ export function apply(ctx) {
   let keyDiag = ''
   let keyKind
   let proxyCache = { text: undefined, at: 0, done: false }
-  /** Owner scope of the `jina-tools` settings namespace; undefined without a provider. */
-  let settingsScope
-  let settingsDiag = ''
   let currentCwd = undefined
+
+  /**
+   * The entry's current `jina-tools` config.
+   *
+   * The settings service marks this entry's fields volatile, so a card write
+   * updates the entry and the fiber reloads — `apply` runs again with a fresh
+   * `config`. Reading the fiber's live value first also covers a reload that
+   * happens between operations, so every tool call sees the latest write.
+   *
+   * @returns the validated config object (never undefined).
+   */
+  function activeConfig() {
+    try {
+      const live = ctx.fiber && ctx.fiber.config
+      if (live !== null && typeof live === 'object') return live
+    } catch (err) { /* fall through to the apply-time snapshot */ }
+    return config !== null && typeof config === 'object' ? config : {}
+  }
 
   /** dsh home directory: $DSH_HOME, else ~/.dsh. */
   function dshHome() {
@@ -200,7 +237,7 @@ export function apply(ctx) {
     } catch (err) { return undefined }
   }
 
-  /** API key: credential, then workspace file, then dsh-home file. */
+  /** API key: credential, then environment, then the legacy key files. */
   async function loadKey() {
     let value
     let kind
@@ -223,7 +260,19 @@ export function apply(ctx) {
       attempts.push('credential ' + CRED_REF + ': ' + String((err && err.message) || err))
     }
     if (value === undefined) {
-      // File sources: cached 30s; the 401 path invalidates and re-reads.
+      // The environment path is the supported one for preset-free/headless
+      // profiles (`JINA_API_KEY` on the row, or exported before launch).
+      const fromEnv = typeof process !== 'undefined' && process.env ? String(process.env[CRED_REF] || '').trim() : ''
+      if (fromEnv !== '') {
+        value = fromEnv
+        kind = 'env'
+        attempts.push('env ' + CRED_REF + ': found')
+      } else {
+        attempts.push('env ' + CRED_REF + ': not set')
+      }
+    }
+    if (value === undefined) {
+      // Legacy file sources: cached 30s; the 401 path invalidates and re-reads.
       if (fileKeyCache.text !== undefined && Date.now() - fileKeyCache.at < 30000) {
         attempts.push('file cache: hit')
         value = fileKeyCache.text
@@ -232,10 +281,10 @@ export function apply(ctx) {
         const root = resolveRoot()
         const home = dshHome()
         const candidates = [
-          { kind: 'workspace abs', path: root + '\\' + KEY_FILE, opts: undefined },
+          { kind: 'workspace abs', path: join(root, KEY_FILE), opts: undefined },
           { kind: 'workspace rel+cwd', path: KEY_FILE, opts: { cwd: root } },
           { kind: 'workspace rel', path: KEY_FILE, opts: undefined },
-          { kind: 'home abs', path: home + '\\' + KEY_FILE, opts: undefined },
+          { kind: 'home abs', path: join(home, KEY_FILE), opts: undefined },
           { kind: 'home rel+cwd', path: KEY_FILE, opts: { cwd: home } },
         ]
         for (const c of candidates) {
@@ -280,13 +329,12 @@ export function apply(ctx) {
   }
 
   /**
-   * The manual proxy address stored by the settings card, re-read per operation
-   * (same contract as the API key: a saved change reaches the next call without
-   * a restart). '' while unconfigured or while no settings provider is mounted.
+   * The manual proxy address stored on the `jina-tools` entry, re-read per
+   * operation (same contract as the API key: a saved change reaches the next
+   * call without a restart). '' while unconfigured.
    */
   function settingProxy() {
-    if (settingsScope === undefined) return ''
-    try { return proxySettingOf(settingsScope.get()) } catch (err) { return '' }
+    try { return proxySettingOf(activeConfig()) } catch (err) { return '' }
   }
 
   /**
@@ -379,16 +427,46 @@ export function apply(ctx) {
       if (/^https?:\/\//i.test(proxy)) env.NODE_USE_ENV_PROXY = '1'
       return env
     }
-    const parse = (r) => {
-      let parsed
-      try { parsed = JSON.parse(r.stdout.text) } catch (e) {
-        return { ok: false, status: 0, text: 'helper output not parseable: ' + String(r.stdout.text).slice(0, 300) + (r.stderr.text ? ' [stderr: ' + String(r.stderr.text).slice(0, 300) + ']' : '') }
+    /**
+     * Turn one helper run into a result.
+     *
+     * The collector keeps a bounded in-memory window and spills the complete
+     * bytes to disk (`lossy` + `spillPath`). A large page therefore arrives
+     * headless in memory: recover the full envelope from the spill file before
+     * parsing, and say what happened when there is nothing to recover — a
+     * truncated JSON fragment would otherwise surface as a parse error.
+     */
+    const parse = async (r) => {
+      let text = r.stdout.text
+      let recovered = false
+      if (r.stdout.lossy === true && typeof r.stdout.spillPath === 'string' && r.stdout.spillPath !== '') {
+        try {
+          const full = await ctx.fs.readText(r.stdout.spillPath)
+          if (typeof full === 'string' && full.length > text.length) {
+            text = full
+            recovered = true
+          }
+        } catch (err) { /* keep the retained window */ }
       }
-      if (typeof parsed !== 'object' || parsed === null) return { ok: false, status: 0, text: 'bad helper output: ' + String(r.stdout.text).slice(0, 300) }
+      let parsed
+      try {
+        parsed = JSON.parse(text)
+      } catch (e) {
+        const why = r.stdout.lossy === true && !recovered
+          ? 'helper output exceeded the in-memory window and no spill file could be read: '
+          : 'helper output not parseable: '
+        return {
+          ok: false,
+          status: 0,
+          text: why + String(text).slice(0, 300)
+            + (r.stderr.text ? ' [stderr: ' + String(r.stderr.text).slice(0, 300) + ']' : ''),
+        }
+      }
+      if (typeof parsed !== 'object' || parsed === null) return { ok: false, status: 0, text: 'bad helper output: ' + String(text).slice(0, 300) }
       return parsed
     }
     let r = await runCollect([node, '-e', HTTP_HELPER_SCRIPT], payload, MAX_OUT, makeEnv(plan.url), spec.signal)
-    let parsed = withProxy(parse(r), plan)
+    let parsed = withProxy(await parse(r), plan)
     if (parsed.ok || parsed.status !== 0) return parsed
     // Transport-level failure: retry once. An automatically discovered proxy is
     // rediscovered first (the VPN may have restarted on a new port); a manually
@@ -401,7 +479,7 @@ export function apply(ctx) {
       retryPlan = await proxyPlan(spec.proxy)
     }
     r = await runCollect([node, '-e', HTTP_HELPER_SCRIPT], payload, MAX_OUT, makeEnv(retryPlan.url), spec.signal)
-    return withProxy(parse(r), retryPlan)
+    return withProxy(await parse(r), retryPlan)
   }
 
   /** Full call: key handling + auth header + 401 key refresh. */
@@ -412,7 +490,7 @@ export function apply(ctx) {
     let key = explicit ? String(opts.apiKey) : await loadKey()
     if (key) headers.Authorization = 'Bearer ' + key
     if (opts.needsKey && !key) {
-      return { ok: false, status: 401, text: 'Jina API key required for this command. Set it in the DSH settings page (Jina Tools) or put it in ' + KEY_FILE + ' in the session workspace or the dsh home directory (one line). Get a free key at https://jina.ai/?sui=apikey' + (keyDiag ? ' [key lookup: ' + keyDiag + ']' : '') }
+      return { ok: false, status: 401, text: 'Jina API key required for this command. Set it in the DSH settings page (Jina Tools), export JINA_API_KEY, or (legacy) put it in ' + KEY_FILE + ' in the session workspace or the dsh home directory (one line). Get a free key at https://jina.ai/?sui=apikey' + (keyDiag ? ' [key lookup: ' + keyDiag + ']' : '') }
     }
     const mk = () => ({ url: opts.url, method: opts.method || 'POST', headers, body: opts.body, timeoutMs: opts.timeoutMs, signal: opts.signal, ...(opts.proxy !== undefined ? { proxy: opts.proxy } : {}) })
     let res = await jinaRequest(mk())
@@ -427,9 +505,37 @@ export function apply(ctx) {
     return res
   }
 
-  /** Centralized Cloudflare turnstile and bot-challenge bypass auto-retry. */
+  /**
+   * Whether a failed Reader call failed *because* a target selector matched
+   * nothing. Jina answers 422 with `No content available for URL … with target
+   * selector` — a scope miss, not a malformed request.
+   */
+  function isMissingTargetError(res) {
+    if (!res || res.status !== 422) return false
+    const text = String(res.text || '')
+    return /No content available/i.test(text) && /target selector/i.test(text)
+  }
+
+  /**
+   * Centralized Cloudflare turnstile and bot-challenge bypass auto-retry, plus
+   * target-selector relaxation.
+   *
+   * A target selector is a *preference*: the configured default is an
+   * article-shaped list, and large parts of the web (plain pages, SPAs, docs
+   * indexes, example.com) have no such container. Treating it as a hard scope
+   * made every default read of such a page fail with 422, which is why the
+   * scoped call is retried once unscoped. The successful result carries
+   * `selectorRelaxed` so callers can say which scope was dropped.
+   */
   async function callJinaWithCfBypass(opts, toolDefaults) {
     let res = await callJina(opts)
+    if (!res.ok && opts.headers && typeof opts.headers['X-Target-Selector'] === 'string' && isMissingTargetError(res)) {
+      const relaxedHeaders = Object.assign({}, opts.headers)
+      delete relaxedHeaders['X-Target-Selector']
+      const relaxedRes = await callJina({ ...opts, headers: relaxedHeaders })
+      if (relaxedRes.ok) return Object.assign(relaxedRes, { selectorRelaxed: opts.headers['X-Target-Selector'] })
+      res = relaxedRes
+    }
     if (!res.ok && toolDefaults && toolDefaults.autoBypassCloudflare && opts.headers && opts.headers['X-Engine'] !== 'cf-browser-rendering') {
       const text = String(res.text || '')
       const isCloudflare = res.status === 403 || res.status === 503 || text.includes('Cloudflare') || text.includes('cf-chl') || text.includes('turnstile') || text.includes('Attention Required')
@@ -445,6 +551,13 @@ export function apply(ctx) {
       }
     }
     return res
+  }
+
+  /** Model-facing note when a scoped request fell back to the unscoped page. */
+  function selectorRelaxNote(res) {
+    const dropped = res && res.selectorRelaxed
+    if (typeof dropped !== 'string' || dropped === '') return ''
+    return '\n\n[Target selector "' + dropped + '" matched nothing on this page; the unscoped page was returned instead.]'
   }
 
   function describeJinaError(res) {
@@ -677,10 +790,18 @@ export function apply(ctx) {
   }
 
   function getActiveToolSettings() {
-    return settingsScope ? toolSettingsOf(settingsScope.get()) : {}
+    try { return toolSettingsOf(activeConfig()) } catch (err) { return toolSettingsOf({}) }
   }
 
   /** Shared executor for the search tools (jina_web_search / jina_search_arxiv / jina_search_ssrn). */
+  const adversarialSignalOf = (u, title, snippet) => {
+    const t = String(u || '') + ' ' + String(title || '') + ' ' + String(snippet || '');
+    if (/github\.com\/.+\/(issues|pull)\/|bugzilla|jira|\/issues\/|post-mortem|cve-|stack ?trace|error|exception|crash|fail|broken/i.test(t)
+      && !/update readme|fix typo|docs only|formatting only/i.test(t)) return 'FRICTION';
+    if (/reddit\.com|stackoverflow\.com|news\.ycombinator|discuss\.|discord\.|\/discussions?\/|x\.com|forum/i.test(t)) return 'DYNAMIC';
+    return 'STATIC';
+  };
+  const ADVERSARIAL_VECTORS = (q) => [q, q + ' github issues failure error', q + ' site:stackoverflow.com OR site:reddit.com'];
   async function runSearch(args, exec, fixedType) {
     const signal = enterExec(exec)
     const toolDefaults = getActiveToolSettings()
@@ -706,6 +827,43 @@ export function apply(ctx) {
     const headers = { Accept: 'application/json', 'Content-Type': 'application/json' }
     const engine = args.engine || toolDefaults.defaultEngine
     if (engine) headers['X-Engine'] = engine
+
+    const adversarialOn = args.adversarial === true || (args.adversarial !== false && toolDefaults.adversarialResearch === true);
+    if (adversarialOn && !fixedType && (t === undefined || t === 'web')) {
+      const vectors = ADVERSARIAL_VECTORS(query);
+      const seen = new Set();
+      const merged = [];
+      for (const v of vectors) {
+        const vb = { ...body, q: v };
+        const r = await callJina({ url: SEARCH, method: 'POST', headers, body: vb, timeoutMs: 60000, needsKey: true, apiKey: args.apiKey, signal });
+        if (!r.ok) continue;
+        try {
+          const d = JSON.parse(r.text);
+          for (const item of (d.results || d.data || [])) {
+            const u = item && typeof item === 'object' ? (item.url || item.id || '') : String(item);
+            if (!u || seen.has(u)) continue;
+            seen.add(u);
+            merged.push({ ...item, _vector: v, _signal: adversarialSignalOf(item.url, item.title, item.snippet || item.description) });
+          }
+        } catch { /* keep other vectors */ }
+      }
+      if (merged.length === 0) {
+        const res = await callJina({ url: SEARCH, method: 'POST', headers, body, timeoutMs: 60000, needsKey: true, apiKey: args.apiKey, signal });
+        if (!res.ok) return describeJinaError(res);
+        return fmtSearch(res.text, args.json === true);
+      }
+      const rank = { FRICTION: 0, DYNAMIC: 1, STATIC: 2 };
+      merged.sort((a, b) => (rank[a._signal] - rank[b._signal]));
+      if (args.json === true) return JSON.stringify({ results: merged, adversarial: true, vectors }, null, 2);
+      const lines = ['[adversarial-research: friction-first triangulation, ' + vectors.length + ' vectors, ' + merged.length + ' sources]'];
+      for (const r of merged) {
+        lines.push('[' + r._signal + '] ' + String(r.title || '(untitled)'));
+        if (r.url) lines.push('  ' + String(r.url));
+        if (r.snippet || r.description) lines.push('  ' + String(r.snippet || r.description).slice(0, 200));
+        lines.push('');
+      }
+      return lines.join('\n').trim();
+    }
 
     const res = await callJina({
       url: SEARCH, method: 'POST',
@@ -806,6 +964,7 @@ export function apply(ctx) {
         links: { type: 'boolean', description: 'Include hyperlinks in the output.' },
         images: { type: 'boolean', description: 'Include image summaries in the output.' },
         json: { type: 'boolean', description: 'Return the raw JSON response instead of markdown.' },
+        adversarial: { type: 'boolean', description: 'Force browser engine for friction-heavy pages for this call, overriding the settings toggle.' },
         apiKey: { type: 'string', description: 'Optional Jina API key override.' },
       },
       required: ['url'],
@@ -853,7 +1012,8 @@ export function apply(ctx) {
       const tokenBudget = args.tokenBudget || toolDefaults.defaultTokenBudget
       if (tokenBudget) headers['X-Max-Tokens'] = String(tokenBudget)
 
-      const engine = args.engine || toolDefaults.defaultEngine
+      const adversarialRead = args.adversarial === true || (args.adversarial !== false && toolDefaults.adversarialResearch === true);
+      const engine = args.engine || (adversarialRead ? 'browser' : toolDefaults.defaultEngine)
       if (engine) headers['X-Engine'] = engine
 
       const noCache = args.noCache !== undefined ? args.noCache : toolDefaults.defaultNoCache
@@ -903,7 +1063,7 @@ export function apply(ctx) {
       if (tokenBudget && formatted.length > tokenBudget * 4) {
         formatted = formatted.slice(0, tokenBudget * 4) + '\n\n[... truncated by tokenBudget cap ...]'
       }
-      return formatted + extractUsageFooter(res.text)
+      return formatted + selectorRelaxNote(res) + extractUsageFooter(res.text)
     },
   })
 
@@ -1195,7 +1355,11 @@ export function apply(ctx) {
         'Content-Type': 'application/json',
         'X-Return-Format': args.fullPage ? 'pageshot' : 'screenshot',
       }
-      const targetSel = args.targetSelector || toolDefaults.defaultTargetSelector
+      // A screenshot is a frame, not an extraction: the configured default
+      // target selector is an article-shaped list meant for reading, and
+      // applying it here made captures of any page without an `<article>` fail
+      // with 422. Only an explicit per-call selector scopes a capture.
+      const targetSel = args.targetSelector || ''
       if (targetSel) headers['X-Target-Selector'] = targetSel
       const waitSel = args.waitForSelector || toolDefaults.defaultWaitForSelector
       if (waitSel) headers['X-Wait-For-Selector'] = waitSel
@@ -1207,7 +1371,7 @@ export function apply(ctx) {
         body: { url: String(args.url) }, timeoutMs: 120000, needsKey: true, apiKey: args.apiKey, signal,
       }, toolDefaults)
       if (!res.ok) return describeJinaError(res)
-      let out = fmtScreenshot(res.text)
+      let out = fmtScreenshot(res.text) + selectorRelaxNote(res)
 
       // Attachments Store Integration:
       // If DSH attachments service is mounted, save the image so multimodal agents can view the raster
@@ -1538,8 +1702,8 @@ export function apply(ctx) {
   })
 
   ctx.tools.register({
-    name: 'jina_fact_check',
-    description: 'Verify a factual claim against current web evidence. Returns one of four verdicts — SUPPORTED, REFUTED, MIXED or UNKNOWN — with the sources that produced it. UNKNOWN is returned whenever the retrieved evidence is insufficient, attributed-only or contradictory, rather than inventing a verdict. Evidence and references are always included so the verdict can be audited.',
+    name: 'jina_evidence_map',
+    description: 'Map what retrieved web sources DO with a claim — state it, report it as someone else\'s assertion, deny it, or merely mention the subject — with the source and quote behind every classification. This deliberately renders NO verdict: a snippet scan cannot establish whether a claim is true, and four verdict words over a lexical score implied an authority it does not have. Pair with archive_claim_trace for the archived record; the two together show where a claim circulates and whether a primary record of it exists.',
     parameters: {
       type: 'object',
       additionalProperties: false,
@@ -1555,8 +1719,8 @@ export function apply(ctx) {
       const statement = String(args.statement)
 
       // Primary strategy: retrieve evidence via the SEARCH gateway, then derive
-      // the verdict with the pure evaluator. The verdict is a function of the
-      // retrieved sources — never a standalone string-matching guess.
+      // the per-source classification with the pure evaluator. Stance is a
+      // function of the retrieved text — never a standalone string-matching guess.
       const searchRes = await callJina({
         url: SEARCH, method: 'POST',
         headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
@@ -1572,9 +1736,9 @@ export function apply(ctx) {
           data = undefined
         }
         if (data) {
-          const verdict = evaluateGroundedResults(statement, data)
-          if (verdict.evidence.length > 0) {
-            return formatGroundedVerdict(verdict, statement) + extractUsageFooter(searchRes.text)
+          const map = evaluateGroundedResults(statement, data)
+          if (map.evidence.length > 0) {
+            return formatGroundedVerdict(map, statement) + extractUsageFooter(searchRes.text)
           }
         }
       }
@@ -1650,7 +1814,7 @@ export function apply(ctx) {
         // page can show the effective address even when the probe failed.
         const proxy = out.proxy || null
         const configured = settingProxy()
-        const extra = { proxy, proxyConfigured: configured, ...(settingsDiag === '' ? {} : { settingsError: settingsDiag }) }
+        const extra = { proxy, proxyConfigured: configured, settingsSource: 'config' }
         let payload
         if (out.ok) {
           try {
@@ -1679,65 +1843,284 @@ export function apply(ctx) {
 
   // ---- web settings namespace ------------------------------------------------
   // The web Settings → Plugins tab is keyed by the settings namespace a card
-  // edits and renders a card only for namespaces the Host serves. This
-  // registration makes the deployment's settings provider serve "jina-tools",
-  // pairing it with the "Jina Tools" card the browser half registers under
-  // `key: 'jina-tools'`. The namespace carries the manually configured local
-  // proxy address (`proxyUrl`); the API key stays in the credential seam and
-  // never rides the settings document.
+  // edits, and the settings service serves exactly one namespace per ACTIVE
+  // loader entry whose module exports a Config schema — the entry id. This
+  // plugin's row is `jina-tools` (cordis.patch.yml), so the module-level
+  // `Config` export *is* the namespace: the form the card binds to, the
+  // validation Cordis runs before `apply`, and the values `settingProxy()` /
+  // `getActiveToolSettings()` read back.
   //
-  // Zero-dependency note: the settings service consumes a schemastery schema
-  // as a function (schema(value) → resolved value), serializes it through
-  // toJSON(), and walks type/dict/meta for secret redaction. The schema built
-  // by proxy.js is a plain object covering exactly that surface, so this plugin
-  // still imports nothing from the harness's package graph (an out-of-tree
-  // bundle at this location cannot resolve those imports). Profiles without a
-  // settings provider never mount the inject, and the plugin keeps working
-  // without the manual override — just with automatic proxy discovery only.
-  const settingsNamespace = (value) => {
-    if (!/^[a-z][a-z0-9-]*$/.test(String(value))) {
-      throw new TypeError('settings namespace "' + String(value) + '" must match ^[a-z][a-z0-9-]*$')
-    }
-    return value
-  }
+  // There is nothing to register here: the settings service has no
+  // `register(ns, schema)` API (`packages/settings/settings/src/index.ts`
+  // derives forms from `entry.fiber.runtime.Config`). Attempting one inside a
+  // `try/catch` is how this plugin previously started silently half-configured
+  // — the card rendered, writes were inert, and only the primer payload's
+  // `settingsError` said so.
+  //
+  // It also carries no dependency on the harness package graph: proxy.js
+  // builds a duck-typed node covering the two contracts the runtime actually
+  // touches (`~standard.validate` for Cordis, `toJSON()`/`meta`/`dict` for the
+  // settings service), so an out-of-tree bundle keeps working without being
+  // able to resolve `@deepseek-ai/schemastery`.
 
-  ctx.inject(['settings'], (sctx) => {
-    try {
-      settingsScope = sctx.settings.register(settingsNamespace(SETTINGS_NAMESPACE), createSettingsSchema(), {
-        base: {
-          defaultSearchNum: 5,
-          defaultEngine: 'auto',
-          defaultRetainImages: 'none',
-          defaultNoCache: false,
-        },
-      })
-    } catch (err) {
-      settingsDiag = String((err && err.message) || err)
-      settingsScope = undefined
-    }
-  })
-
-  // ---- system prompt guidance section (band 110) ---------------------------
+  // ---- system prompt guidance section (TOOL_* band) -------------------------
   // Injects optimal operational guidance into the agent system prompt when
   // systemPrompt service is available (standard non-complete presets).
+  // Order 2150 sits inside the documented TOOL_* band (1000-2900), directly
+  // after the built-in web-search/web-fetch guidance (2000/2100).
   ctx.inject(['systemPrompt'], (pctx) => {
     try {
       pctx.systemPrompt.section({
         name: 'tool:jina-suite',
-        order: 110,
+        order: 2150,
         text: [
-          '# Jina AI Web Intelligence Suite Guidance',
-          'You have access to 16 specialized Jina AI tools. Follow these rules for maximum efficiency:',
-          '- Parallel search: NEVER run serial turn-by-turn searches. Use jina_search_batch({ queries: [...] }) to resolve up to 5 research vectors in a single turn.',
-          '- Structured extraction: When extracting specific fields from articles/docs, DO NOT dump raw markdown into context. Use jina_extract({ url, instruction, schema }) to return compact, validated JSON.',
-          '- Long documents: Use jina_chunk({ url, chunkBy: "h2" }) on massive RFCs or manuals to avoid context overflow.',
-          '- Local files: Use jina_read_file({ filePath }) to extract text and LaTeX formulas from local workspace PDFs or HTML mockups.',
-          '- Visual verification: jina_screenshot automatically saves full-page PNGs into the session AttachmentStore for multimodal inspection.',
-          '- Truth verification: Use jina_fact_check({ statement }) to verify contentious claims against live web evidence.',
-          '- Academic research: Use jina_search_arxiv({ query, readFullText: true }) to discover and read full papers in one turn.',
+          '# Jina AI Web Intelligence Suite (19 tools)',
+          '- Research: never run serial turn-by-turn searches — one jina_search_batch({ queries }) resolves up to 5 vectors per turn, and jina_search_arxiv({ query, readFullText: true }) discovers and reads papers in one call.',
+          '- Extraction: jina_extract({ url, instruction, schema }) returns compact validated JSON instead of page markdown; jina_chunk({ url, chunkBy: "h2" }) splits long documents; jina_read_file({ filePath }) reads local PDFs, HTML and code.',
+          '- Evidence: jina_fact_check (archive record + live stance) and jina_evidence_map (live-only) report states/reports/denies/mentions without rendering a verdict; jina_rank_archive ranks matches and says when none fits instead of manufacturing relevance.',
+          '- Modes: the `adversarialResearch` setting (per-call `adversarial: true`) switches jina_web_search to friction-first triangulation; jina_screenshot saves full-page PNGs into the session attachments.',
         ].join('\n'),
       })
     } catch (err) { /* non-fatal prompt section registration */ }
   })
+
+  // Unified: the archive's record + the live web's stance, in one answer.
+  ctx.tools.register({
+    name: 'jina_fact_check',
+    description: 'Fact-check a claim against the two records that can bear on it: the ARCHIVE and the LIVE WEB. It renders NO verdict by design — a verdict over retrieved text is not knowledge — but it sets the vector for one, because it establishes what IS knowable: how many documents carry the claim and since when, how many of those sit in the PRIMARY record (government, military, declassified), and what live sources do with it (state, report, deny, mention), each with the quote behind it. The contrast is the finding: circulation is not documentation, and neither is verification. Requires the archivist backend for the archive half; without it the live half is returned alone and says so.',
+    output: OUT,
+    parameters: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        statement: { type: 'string', description: 'The claim or phrasing to sweep for' },
+        size: { type: 'integer', description: 'Archive instances to sample (default: 8)' },
+        apiKey: { type: 'string', description: 'Optional Jina API key override' },
+      },
+      required: ['statement'],
+    },
+    async execute(args, exec) {
+      const signal = enterExec(exec)
+      const statement = String(args.statement)
+      const size = Number(args.size || 8)
+
+      const archivePromise = archiveAvailable()
+        ? archiveCall('claim_trace', { statement, size }, ARCHIVE_TIMEOUT_MS)
+            .then((v) => ({ ok: true, value: v }))
+            .catch((err) => ({ ok: false, error: String((err && err.message) || err) }))
+        : Promise.resolve({ ok: false, error: 'archivist backend not present at the configured paths' })
+
+      const searchRes = await callJina({
+        url: SEARCH, method: 'POST',
+        headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
+        body: { q: statement, num: 5 },
+        timeoutMs: 30000, needsKey: false, apiKey: args.apiKey, signal,
+      })
+
+      let live = null
+      if (searchRes.ok && searchRes.text) {
+        try { live = evaluateGroundedResults(statement, JSON.parse(searchRes.text)) } catch (e) { live = null }
+      }
+
+      const archive = await archivePromise
+      if (!archive.ok && (!live || !live.evidence || live.evidence.length === 0) && !searchRes.ok) {
+        return describeJinaError(searchRes)
+      }
+      const lines = [`### Unified evidence sweep: ${statement}`, '']
+
+      lines.push('ARCHIVE — documentary footprint (archive.org full-text index)')
+      if (archive.ok) {
+        const rec = archive.value.recorded || {}
+        const prim = archive.value.primary_record || {}
+        const yr = archive.value.year_span || {}
+        const sc = archive.value.stance_counts || {}
+        lines.push(`  ${rec.documents ?? '?'} documents carry this phrasing · year span ${yr.earliest ?? '?'}–${yr.latest ?? '?'}`)
+        lines.push(`  ${prim.documents ?? 'n/a'} of them sit in the PRIMARY record` +
+          ((prim.collections || []).length ? ` (${prim.collections.map((c) => c.key).slice(0, 5).join(', ')})` : ''))
+        if (sc.sampled !== undefined) {
+          lines.push(`  archival stance (of ${sc.sampled} sampled): ${sc.states || 0} state · ${sc.reports || 0} report · ${sc.denies || 0} deny · ${sc.mentions || 0} mention`)
+        }
+        if ((archive.value.figures_missing || []).length) {
+          lines.push(`  caution: figure(s) ${archive.value.figures_missing.join(', ')} absent from archival passages carrying the phrasing`)
+        }
+        lines.push(`  languages: ${(rec.languages || []).map((l) => l.key).slice(0, 5).join(', ') || '—'}`)
+        lines.push(`  denial phrasing in ${(archive.value.denial_phrasing || []).length} of the sampled instances`)
+        lines.push('  dated instances:')
+        for (const e of (archive.value.evidence || []).slice(0, 4)) {
+          const prov = e.provenance || {}
+          const st = e.stance ? ` [${String(e.stance).toUpperCase()}]` : ''
+          lines.push(`    · ${e.date ? e.date.slice(0, 10) : 'undated'} — ${e.title || e.identifier}${e.page !== null && e.page !== undefined ? ` (page ${e.page})` : ''}${st}  [${prov.tier || '?'} ${prov.basis || ''}]`)
+          lines.push(`      ${e.url}`)
+          if (e.quote) lines.push(`      "${e.quote.slice(0, 150)}"`)
+        }
+        if ((archive.value.local_warehouse || []).length) {
+          lines.push('  local warehouse cards:')
+          for (const w of archive.value.local_warehouse.slice(0, 2)) {
+            lines.push(`    · [${w.id}] ${w.title || w.identifier} (sha256:${w.digest}) — ${w.url}`)
+            if (w.quote) lines.push(`      "${w.quote.slice(0, 150)}"`)
+          }
+        }
+        lines.push('  Tier grades the ITEM, not its contents: a T4 compilation frequently contains T1 documents.')
+        lines.push('  To cite a finding independently of this host, carry the block below — it can be re-found'
+          + ' at the source, in another copy, or in a third-party catalogue, whereas a bare link cannot:')
+        for (const e of (archive.value.evidence || []).slice(0, 2)) {
+          lines.push(`    ${e.identifier}${e.page !== null && e.page !== undefined ? ` p.${e.page}` : ''}`
+            + `${(e.collections || []).length ? ` · ${(e.collections || []).slice(0, 2).join(', ')}` : ''}`
+            + `${e.date ? ` · ${String(e.date).slice(0, 10)}` : ''}`
+            + `${e.sha1 ? ` · sha1 ${String(e.sha1).slice(0, 12)}` : ''}`)
+        }
+      } else {
+        lines.push(`  unavailable — ${archive.error}`)
+      }
+
+      lines.push('', 'LIVE WEB — what retrieved sources do with it')
+      if (live && live.evidence && live.evidence.length > 0) {
+        lines.push('  ' + live.summary)
+        lines.push(`  term coverage: ${live.termCoverage} (share of the claim's vocabulary present — not a probability)`)
+        if (live.caution) lines.push('  ' + live.caution)
+        if ((live.figuresMissing || []).length) {
+          lines.push(`  figures absent from the sources: ${live.figuresMissing.join(', ')}`)
+        }
+        for (const e of live.evidence.slice(0, 4)) {
+          lines.push(`  [${e.index}] ${String(e.stance).toUpperCase()} — ${e.title || 'Source'} (${e.url || ''})`)
+          if (e.snippet) lines.push(`      "${e.snippet.slice(0, 150)}"`)
+        }
+      } else if (!searchRes.ok && searchRes.status === 401) {
+        lines.push('  skipped (no Jina API key configured — operating in Archive-Only verification mode)')
+      } else {
+        lines.push('  no usable live results')
+      }
+
+      lines.push('', 'Neither side is a verification. Archive counts measure circulation in an index; '
+        + 'live stances measure what particular pages do with the claim. Where the two disagree in scale '
+        + '(heavy circulation, thin primary record) that gap is the finding.')
+      return lines.join('\n') + extractUsageFooter(searchRes.text)
+    },
+  })
+
+  // Bulk-retrieve from the archive, then rank the candidates against a question (Jina rerank when key available, else local BM25/provenance rank).
+  ctx.tools.register({
+    name: 'jina_rank_archive',
+    description: 'Rank archive documents against a research question. One archive call retrieves many candidates WITH their matched snippets, then Jina reranks those snippets (or falls back to local lexical + provenance ranking when running without a Jina key) — so a large candidate set is ordered without downloading a single document; harvest only the winners afterwards. Two honest limits: ranking is over snippets, not full texts; and reranking orders by relevance to the question, NOT by provenance — a document that merely mentions the right authority can outrank the record itself (measured). Use archive_claim_trace with primary_only, or a collection-scoped query, to find the primary layer.',
+    output: OUT,
+    parameters: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        question: { type: 'string', description: 'The research question to rank candidates against' },
+        query: { type: 'string', description: 'Archive search query; defaults to the question' },
+        candidates: { type: 'integer', description: 'Archive hits to retrieve and rank (default 40, max 100)' },
+        top: { type: 'integer', description: 'How many ranked results to return (default 8)' },
+        apiKey: { type: 'string', description: 'Optional Jina API key override' },
+      },
+      required: ['question'],
+    },
+    async execute(args, exec) {
+      const signal = enterExec(exec)
+      const question = String(args.question)
+      const query = String(args.query || args.question)
+      const candidates = Math.max(1, Math.min(Number(args.candidates || 40), 100))
+      const top = Math.max(1, Number(args.top || 8))
+
+      let hits = []
+      let total = null
+      try {
+        const res = await archiveCall('search_hits', { query, size: candidates }, ARCHIVE_TIMEOUT_MS)
+        hits = res.hits || []
+        total = res.total
+      } catch (err) {
+        return `Archive retrieval failed: ${(err && err.message) || err}`
+      }
+      if (hits.length === 0) return `No archive documents matched: ${query}`
+
+      const documents = hits.map((h) => {
+        const page = (h.page !== null && h.page !== undefined) ? ` (page ${h.page})` : ''
+        return `${h.title || h.identifier}${page}\n${h.quote || ''}`
+      })
+
+      const res = await callJina({
+        url: API + '/v1/rerank', method: 'POST',
+        headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
+        body: { model: 'jina-reranker-v3.5', query: question, documents, top_n: Math.min(top, documents.length) },
+        timeoutMs: 90000, needsKey: false, apiKey: args.apiKey, signal,
+      })
+
+      let results = []
+      let mode = 'jina-reranker-v3.5'
+      if (res.ok && res.text) {
+        try {
+          const parsed = JSON.parse(res.text)
+          results = parsed.results || parsed.data || []
+        } catch (e) {
+          results = []
+        }
+      }
+
+      if (results.length === 0) {
+        mode = 'local-lexical-provenance (offline fallback)'
+        const qToks = new Set(question.toLowerCase().split(/[^a-z0-9]+/).filter((w) => w.length >= 3))
+        const tierBoost = { T1: 0.25, T2: 0.15, T3: 0.1, T4: 0.0, T5: 0.0 }
+        results = hits.map((h, index) => {
+          const docText = `${h.title || ''} ${h.quote || ''}`.toLowerCase()
+          const dToks = new Set(docText.split(/[^a-z0-9]+/).filter((w) => w.length >= 3))
+          let overlap = 0
+          for (const t of qToks) { if (dToks.has(t)) overlap += 1 }
+          const lex = qToks.size ? overlap / qToks.size : 0.2
+          const boost = tierBoost[(h.provenance && h.provenance.tier) || 'T4'] || 0
+          return { index, relevance_score: Math.min(1, Number((lex * 0.75 + boost).toFixed(4))) }
+        }).sort((a, b) => b.relevance_score - a.relevance_score).slice(0, Math.min(top, hits.length))
+      }
+
+      const scores = results.map((r) => (r.relevance_score !== undefined ? r.relevance_score : r.score))
+        .filter((n) => typeof n === 'number')
+      const topScore = scores.length ? Math.max(...scores) : null
+
+      const lines = [
+        `### Archive ranked against: ${question} [engine: ${mode}]`,
+        `Retrieved ${hits.length} of ${total} matching documents; ranking is over their matched snippets, not full texts.`,
+      ]
+      // A collapsed score distribution is information, not a ranking. When no
+      // candidate fits the question the reranker cannot manufacture one, and the
+      // low absolute scores say so — reporting a list without saying this would
+      // present "best of a bad set" as an answer.
+      if (topScore !== null && topScore < 0.15) {
+        lines.push('', `**No candidate is a strong fit for this question** (best score ${topScore.toFixed(4)}, `
+          + `spread ${(scores[scores.length - 1] ?? 0).toFixed(4)}–${topScore.toFixed(4)}). The retrieved set appears to `
+          + 'contain discussion OF the subject rather than the document asked for. Narrow the query, scope it to a '
+          + 'collection, or use archive_claim_trace with primary_only — do not read the list below as an answer.')
+      }
+      lines.push('')
+      for (const r of results) {
+        const h = hits[r.index] || {}
+        const score = (r.relevance_score !== undefined ? r.relevance_score : r.score)
+        const prov = h.provenance ? ` [${h.provenance.tier}]` : ''
+        lines.push(`**[${typeof score === 'number' ? score.toFixed(4) : score}] ${h.title || h.identifier}${prov}**`)
+        if (h.page !== null && h.page !== undefined) lines.push(`  page ${h.page} · ${h.date ? String(h.date).slice(0, 10) : 'undated'}`)
+        if (h.url) lines.push(`  ${h.url}`)
+        if (h.quote) lines.push(`  "${String(h.quote).slice(0, 200).replace(/\n/g, ' ')}"`)
+        lines.push('')
+      }
+      lines.push('Relevance to the question is not evidence of provenance: a document that mentions the '
+        + 'right authority can outrank the record itself. To identify the primary layer, scope the query '
+        + 'to a collection or use archive_claim_trace with primary_only. Harvest the winners with '
+        + 'archive_text_harvest before any full-text analysis.')
+      return lines.join('\n') + extractUsageFooter(res.text)
+    },
+  })
+
+  // Mount the full 41-tool Archive.org & Wayback Machine suite when present alongside dsh-jina,
+  // guarding against duplicate registration if dsh-archive-suite is also mounted as its own bundle.
+  try {
+    const guardedCtx = Object.create(ctx, {
+      tools: {
+        value: {
+          register(def) {
+            try { return ctx.tools.register(def) } catch { /* already registered by standalone bundle */ }
+          },
+        },
+      },
+    })
+    applyArchiveSuite(guardedCtx)
+  } catch { /* standalone dsh-jina without dsh-archive-suite checkout */ }
 
 }

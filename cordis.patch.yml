@@ -1,7 +1,7 @@
 # dsh-jina bundle layer — applied on top of a dsh profile's composition.
 #
 # One dual-face row (`dsh-jina`), the shape dsh uses for every browser-half
-# package: the host half registers the twelve jina_* model tools and the
+# package: the host half registers the nineteen jina_* model tools and the
 # network transport; the browser half is declared by the ROOT manifest's
 # `dsh.client` + `exports["./client"]` and registers the "Jina Tools" card in
 # the web settings panel. The client-modules scan only accepts rows whose
@@ -10,10 +10,19 @@
 # one row.
 #
 # The API key lives in the host credential seam (reference JINA_API_KEY,
-# written by the web settings page via credentials.set). The `jina-tools`
-# settings namespace this row serves carries one field — `proxyUrl`, the
-# manually configured local proxy address the card writes and the transport
-# reads per operation. This patch itself defines no settings.
+# written by the web settings page via credentials.set); the JINA_API_KEY
+# environment variable is the supported fallback for headless profiles.
+#
+# The `jina-tools` settings namespace is served by the HOST MODULE ITSELF: its
+# module-level `Config` export is the schema the settings service projects into
+# the "Jina Tools" card's form, and every field is volatile, so a card write
+# updates this entry live. The optional `config:` block below is therefore the
+# sanctioned way to seed those defaults per deployment (uncomment and edit);
+# the settings page writes the same values back into the profile patch.
 - insert:
     - id: jina-tools
       name: '@martinm86867-ops/dsh-jina'
+      # config:
+      #   proxyUrl: 'http://127.0.0.1:7890'
+      #   adversarialResearch: false
+      #   defaultSearchNum: 5

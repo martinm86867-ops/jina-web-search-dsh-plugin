@@ -2,6 +2,16 @@ node_modules/
 .pnpm-store/
 *.log
 .DS_Store
+*.tgz
+
+# Local scratch: throwaway DSH_HOME used for boot verification
+.dsh-init/
+
+# The DSH agent-development playbook is its own repository
+# (github.com/martinm86867-ops/dsh-docs). It lives in a working copy here, but
+# it must never be committed into this package: `git add .` would stage it as
+# an embedded-repository gitlink.
+dsh-docs/
 
 # 绝不要把 API key 提交进仓库
 jina-api-key.txt

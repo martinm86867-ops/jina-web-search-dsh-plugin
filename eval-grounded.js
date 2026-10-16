@@ -1,5 +1,5 @@
 /**
- * Grounded-verdict evaluation for `jina_fact_check` (pure data, zero deps).
+ * Per-source stance classification for `jina_evidence_map` (pure data, zero deps).
  *
  * WHY THIS MODULE EXISTS
  * ----------------------
@@ -13,8 +13,10 @@
  * was being negated — which is why uncontroversial and contested claims alike
  * came back FALSE.
  *
- * This module replaces that with the contract the tool's description always
- * promised:
+ * This module replaced that with a scoring contract. It has since gone further:
+ * it no longer renders a verdict at all, because no snippet scan can establish
+ * truth. It reports what each source DOES with the claim — state / report /
+ * deny / mention — and lets the reader judge. What remains true of scoring:
  *
  *   1. Relevance gate  — a source only counts if it is *about* the claim.
  *   2. Refutation      — FALSE requires an explicit refutation pattern found
@@ -72,9 +74,6 @@ export const STOPWORDS = new Set([
 export const STRONG_REFUTATION_PATTERNS = [
   'debunked', 'has been debunked', 'disproven', 'disproved', 'discredited',
   'demonstrably false', 'patently false',
-  'no evidence', 'no credible evidence', 'no scientific evidence',
-  'lacks evidence', 'lack of evidence', 'without evidence',
-  'unfounded', 'baseless', 'common misconception', 'conspiracy theory',
 ]
 
 export const NEGATING_REFUTATION_PATTERNS = [
@@ -161,16 +160,20 @@ function negationIsAboutClaim(content, claimTerms) {
 export function findRefutation(text, claimText = '') {
   const hay = normalizedForMatch(text)
   if (!hay) return null
-  for (const p of STRONG_REFUTATION_PATTERNS) if (hay.includes(p)) return p
-
   const claimTerms = termsOf(claimText)
-  for (const p of NEGATING_REFUTATION_PATTERNS) {
+
+  // EVERY pattern — including the strong list — must pass the content test.
+  // "no evidence" and "conspiracy theory" were previously accepted outright, so
+  // an unrelated article containing the phrase refuted any claim whose words it
+  // happened to share. A deictic marker alone says nothing about what is being
+  // denied.
+  const patterns = [...STRONG_REFUTATION_PATTERNS, ...NEGATING_REFUTATION_PATTERNS]
+  for (const p of patterns) {
     let at = hay.indexOf(p)
     while (at !== -1) {
       // The negated content sits BEFORE the falsity marker ("the claim that
       // X is false"), so bound the clause to the marker's own sentence and
-      // read only up to the marker itself — anything after it is commentary
-      // ("... , according to the review") that would dilute the content test.
+      // read only up to the marker itself.
       const from = Math.max(0, at - 160)
       const before = hay.slice(from, at)
       let cut = -1
@@ -287,15 +290,16 @@ export function evaluateGroundedResults(statement, rawResults) {
   for (let i = 0; i < results.length; i += 1) {
     const r = results[i]
     const text = r.snippet || r.title
+    // Coverage is measured PER SOURCE. Summing vocabulary across sources was
+    // the central defect: five unrelated pages that each mention a word or two
+    // collectively "covered" the claim and produced SUPPORTED at 95%.
     const coverage = coverageOf(claimTerms, text)
-    // Titles frequently carry the verdict ("... Are Not 'Genocide'") while the
-    // snippet carries only neutral body text, so both are scanned.
     const refutation = findRefutation(r.snippet, claim) || findRefutation(r.title, claim)
-    // A source counts only if it is actually about the claim. Refutation is
-    // decisive on its own: a source that refutes is relevant by definition.
+    const attributed = refutation === null && isAttributedReporting(text)
+    // A source carries the claim only if IT ALONE contains the claim's content.
+    const carries = refutation === null && coverage >= CORROBORATION_MIN
     const relevant = refutation !== null || coverage >= RELEVANCE_FLOOR
     if (!relevant) continue
-    const attributed = refutation === null && isAttributedReporting(text)
     evidence.push({
       index: i + 1,
       title: r.title,
@@ -304,106 +308,113 @@ export function evaluateGroundedResults(statement, rawResults) {
       coverage: Number(coverage.toFixed(4)),
       refutation,
       attributed,
-      status: refutation !== null ? 'refutes' : 'supports',
+      // Four stances, because collapsing them is what made the tool misleading:
+      //  denies   explicitly denies the claim
+      //  states   carries the claim's content directly
+      //  reports  carries it as someone's assertion ("a commission concluded")
+      //  mentions shares vocabulary only — NOT support
+      stance: refutation !== null ? 'denies'
+        : (carries ? (attributed ? 'reports' : 'states') : 'mentions'),
     })
   }
 
-  const refutations = evidence.filter((e) => e.status === 'refutes')
-  const supports = evidence.filter((e) => e.status === 'supports')
-  const coverage = coverageOf(claimTerms, results.map((r) => r.snippet || r.title).join(' '))
+  const denies = evidence.filter((e) => e.stance === 'denies')
+  const statesList = evidence.filter((e) => e.stance === 'states')
+  const reports = evidence.filter((e) => e.stance === 'reports')
+  const mentions = evidence.filter((e) => e.stance === 'mentions')
+  const carrying = statesList.length + reports.length
 
-  if (refutations.length > 0 && supports.length > 0) {
-    return {
-      verdict: 'MIXED',
-      confidence: 0.5,
-      coverage,
-      refutation: refutations[0].refutation,
-      evidence,
-      reasoning: `Retrieved evidence disagrees: ${supports.length} source(s) corroborate the claim while ${refutations.length} explicitly refute it (pattern: "${refutations[0].refutation}"). The claim is not resolved by this evidence.`,
-    }
+  // Reported as what it is: how much of the claim's vocabulary appears anywhere
+  // in the retrieved text. This is NOT a probability that the claim is true,
+  // and it is no longer printed as one.
+  const termCoverage = Number(
+    coverageOf(claimTerms, results.map((r) => r.snippet || r.title).join(' ')).toFixed(4),
+  )
+  const counts = {
+    denies: denies.length, states: statesList.length, reports: reports.length,
+    mentions: mentions.length, retrieved: results.length,
   }
 
-  if (refutations.length > 0) {
-    return {
-      verdict: 'REFUTED',
-      confidence: Number(Math.min(0.95, 0.6 + 0.1 * refutations.length).toFixed(2)),
-      coverage,
-      refutation: refutations[0].refutation,
-      evidence,
-      reasoning: `Evidence explicitly refutes the claim (pattern: "${refutations[0].refutation}") in ${refutations.length} source(s).`,
-    }
+  // No verdict. A snippet scan cannot establish whether a claim is true, and
+  // four verdict words over a lexical score implied an authority this cannot
+  // have. What it CAN do is report, per source, what that source does with the
+  // claim — and let the reader judge.
+  const classify = (stance) => evidence.filter((e) => e.stance === stance)
+  const summary = [
+    `${counts.states} source(s) state the claim`,
+    `${counts.reports} report it as someone's assertion`,
+    `${counts.denies} deny it`,
+    `${counts.mentions} mention the subject only`,
+    `of ${counts.retrieved} retrieved`,
+  ].join(' · ')
+
+  let caution = null
+  // Figures the claim asserts that appear in none of the sources carrying it.
+  // The old design swallowed this into an UNKNOWN verdict; reporting it keeps
+  // the finding — the wording matches but the quantity does not — visible.
+  const carrierText = [...statesList, ...reports].map((e) => e.snippet || e.title).join(' ')
+  const figuresMissing = (claimNumbers.length > 0 && [...statesList, ...reports].length > 0)
+    ? claimNumbers.filter((n) => !allFiguresPresent([n], carrierText))
+    : []
+
+  if (figuresMissing.length > 0) {
+    caution = `The claim's figure(s) ${figuresMissing.join(', ')} appear in none of the sources that `
+      + 'carry it: the wording matches, the quantity does not.'
+  } else if (counts.mentions > 0 && counts.states === 0 && counts.denies === 0 && counts.reports === 0) {
+    caution = 'Every relevant source shares vocabulary with the claim without asserting it. '
+      + 'Topical overlap is not corroboration.'
+  } else if (counts.denies > 0 && (counts.states > 0 || counts.reports > 0)) {
+    caution = 'Retrieved sources disagree with one another; this evidence does not settle the claim.'
+  } else if (counts.states === 0 && counts.reports > 0) {
+    caution = 'The claim appears only as someone else\'s assertion, which is evidence about who '
+      + 'asserts what, not that the assertion holds.'
+  } else if (counts.states > 0 && counts.denies === 0) {
+    caution = 'Sources carrying the claim\'s wording is not verification that the claim is true. '
+      + 'Confirm against the primary record before relying on it.'
   }
 
-  if (supports.length > 0 && coverage >= CORROBORATION_MIN) {
-    // A figure in the claim that appears nowhere in the evidence means the
-    // evidence is about the same subject but not the same fact.
-    const evidenceText = supports.map((e) => e.snippet || e.title).join(' ')
-    if (!allFiguresPresent(claimNumbers, evidenceText)) {
-      const missing = claimNumbers.filter((n) => !allFiguresPresent([n], evidenceText))
-      return {
-        verdict: 'UNKNOWN',
-        confidence: Number(Math.min(0.3, coverage * 0.3).toFixed(2)),
-        coverage,
-        refutation: null,
-        evidence,
-        reasoning: `The claim's stated figure(s) ${missing.join(', ')} do not appear in any retrieved source, so the evidence covers the subject but not the specific fact asserted. Reported as UNKNOWN.`,
-      }
-    }
-
-    const direct = supports.filter((e) => !e.attributed)
-    // A contested assertion ("X has committed Y") is frequently retrieved as
-    // third-party attribution ("a commission says X has committed Y"). That is
-    // evidence about who asserts what — not evidence that the assertion is
-    // true — so a claim supported only by such reports is not settled here.
-    if (direct.length === 0) {
-      return {
-        verdict: 'UNKNOWN',
-        confidence: Number(Math.min(0.35, coverage * 0.35).toFixed(2)),
-        coverage,
-        refutation: null,
-        evidence,
-        reasoning: `All ${supports.length} relevant source(s) report the claim as someone's assertion rather than stating it directly, and none refutes it. Attribution alone does not settle the claim, so this is reported as UNKNOWN.`,
-      }
-    }
-    return {
-      verdict: 'SUPPORTED',
-      confidence: Number(Math.min(0.95, coverage).toFixed(2)),
-      coverage,
-      refutation: null,
-      evidence,
-      reasoning: `Web evidence covers ${(coverage * 100).toFixed(0)}% of the claim's terms across ${supports.length} relevant source(s) with no refutation. This is corroboration evidence, not a Grounding-API verdict.`,
-    }
-  }
-
-  // Default: abstain. Absence of corroboration is not refutation.
-  const reason = evidence.length === 0
-    ? 'No retrieved source was sufficiently about the claim to evaluate it (nothing cleared the relevance floor).'
-    : `Retrieved sources touch the claim (${(coverage * 100).toFixed(0)}% term coverage) but do not contain enough of it to corroborate, and none refutes it.`
   return {
-    verdict: 'UNKNOWN',
-    confidence: Number(Math.min(0.3, coverage).toFixed(2)),
-    coverage,
-    refutation: null,
+    claim,
     evidence,
-    reasoning: `${reason} Reporting UNKNOWN rather than inventing a verdict.`,
+    termCoverage,
+    counts,
+    figuresMissing,
+    denials: classify('denies'),
+    statements: classify('states'),
+    reports: classify('reports'),
+    mentionsOnly: classify('mentions'),
+    summary,
+    caution,
+    refutation: denies.length ? denies[0].refutation : null,
   }
 }
 
-/** Render the model-facing text block for a verdict. */
+/** Render the model-facing evidence map. Deliberately contains no verdict. */
 export function formatGroundedVerdict(v, statement) {
+  const c = v.counts || {}
   const lines = []
-  lines.push('Verdict: ' + v.verdict)
-  lines.push('Confidence: ' + (v.confidence * 100).toFixed(1) + '%')
-  lines.push('Reasoning: ' + v.reasoning)
+  lines.push('Evidence map — what the retrieved sources do with this claim:')
+  lines.push('  ' + v.summary)
+  // Term coverage is stated with its meaning. It was previously rendered
+  // "Confidence: 95.0%", which turned a lexical overlap ratio into an apparent
+  // probability that the claim was true.
+  lines.push(`  term coverage: ${v.termCoverage} — share of the claim's vocabulary appearing in the`)
+  lines.push('  retrieved text. Not a probability and not a verification.')
+  if (v.caution) lines.push('  ' + v.caution)
   lines.push('')
   lines.push('Statement: ' + statement)
-  if (v.evidence.length > 0) {
-    lines.push('')
-    lines.push('Evidence & References:')
-    for (const e of v.evidence.slice(0, 3)) {
-      lines.push(`  [${e.index}] ${e.status.toUpperCase()} — ${e.title || 'Source'} (${e.url || ''})`)
+  const groups = [
+    ['DENY', v.denials], ['STATE', v.statements],
+    ['REPORT', v.reports], ['MENTION ONLY', v.mentionsOnly],
+  ]
+  for (const [label, group] of groups) {
+    for (const e of (group || []).slice(0, 3)) {
+      lines.push(`  [${e.index}] ${label} — ${e.title || 'Source'} (${e.url || ''})`)
       if (e.snippet) lines.push(`      Quote: "${e.snippet}"`)
     }
+  }
+  if (!v.evidence || v.evidence.length === 0) {
+    lines.push('  No retrieved source was sufficiently about the claim to classify.')
   }
   return lines.join('\n')
 }

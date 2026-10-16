@@ -33,7 +33,6 @@
 export const SETTINGS_NAMESPACE = 'jina-tools'
 
 /** Settings field holding the manually configured local proxy address. */
-/** Settings field holding the manually configured local proxy address. */
 export const PROXY_SETTING_FIELD = 'proxyUrl'
 
 // Tool customization fields for jina-tools settings namespace
@@ -51,6 +50,7 @@ export const DEFAULT_REMOVE_OVERLAY_FIELD = 'defaultRemoveOverlay'
 export const DEFAULT_DETACH_INVISIBLES_FIELD = 'defaultDetachInvisibles'
 export const DEFAULT_WITH_SHADOW_DOM_FIELD = 'defaultWithShadowDom'
 export const DEFAULT_WITH_IFRAME_FIELD = 'defaultWithIframe'
+export const ADVERSARIAL_RESEARCH_FIELD = 'adversarialResearch'
 
 // Standard high-signal default selectors for web extraction (hardened against CMS & obfuscated frameworks)
 export const DEFAULT_TARGET_SELECTORS = 'article, main, [role="main"], [role="article"], .markdown-body, .content, #content, .main-content, #main-content, .post-content, .article-body, .entry-content, [itemprop="articleBody"], [itemprop="text"], [data-testid*="article"], [data-testid*="content"]'
@@ -185,6 +185,7 @@ export const SETTINGS_FIELDS = {
   defaultDetachInvisibles: DEFAULT_DETACH_INVISIBLES_FIELD,
   defaultWithShadowDom: DEFAULT_WITH_SHADOW_DOM_FIELD,
   defaultWithIframe: DEFAULT_WITH_IFRAME_FIELD,
+  adversarialResearch: ADVERSARIAL_RESEARCH_FIELD,
 }
 
 
@@ -306,25 +307,11 @@ export function selectProxy(input) {
 }
 
 /**
- * Build the `jina-tools` settings schema.
+ * Normalize a stored `jina-tools` section into the plugin's effective
+ * defaults. Never throws: a hand-edited patch cannot break a tool call.
  *
- * The plugin runs out of tree and cannot import the harness's schemastery
- * package, so this is a duck-typed node covering exactly the surface the
- * runtime touches: the call form (`schema(value) -> resolved value`, used by
- * `settings.register`/`resolve`) and `toJSON()` (used by `settings.describe`
- * and rehydrated by the browser as `new Schema(serialized)`).
- *
- * The resolved value is normalized to `{}` or `{ proxyUrl: <string> }`, so a
- * hand-edited `settings.yaml` cannot make registration fail: whatever the
- * stored section says, this returns a well-formed section and the transport
- * reports an unusable address through its own diagnostics.
- *
- * Shape note (verified against vendored schemastery 3.18.2): a dict entry must
- * carry `meta`, otherwise the rehydrated `string` resolver dereferences
- * `meta.pattern` on undefined (`new Schema(serialized)` assigns the serialized
- * dict verbatim — plain objects are never converted into nodes).
- *
- * @returns a schemastery-compatible schema node for the `jina-tools` namespace.
+ * @param section - the resolved section value (any shape).
+ * @returns the fully populated effective settings.
  */
 export function toolSettingsOf(section) {
   if (section === null || typeof section !== 'object') {
@@ -344,6 +331,7 @@ export function toolSettingsOf(section) {
       defaultDetachInvisibles: true,
       defaultWithShadowDom: false,
       defaultWithIframe: false,
+      adversarialResearch: false,
     }
   }
   const rawBudget = section.defaultTokenBudget
@@ -364,28 +352,75 @@ export function toolSettingsOf(section) {
     defaultDetachInvisibles: typeof section.defaultDetachInvisibles === 'boolean' ? section.defaultDetachInvisibles : true,
     defaultWithShadowDom: typeof section.defaultWithShadowDom === 'boolean' ? section.defaultWithShadowDom : false,
     defaultWithIframe: typeof section.defaultWithIframe === 'boolean' ? section.defaultWithIframe : false,
+    adversarialResearch: typeof section.adversarialResearch === 'boolean' ? section.adversarialResearch : false,
   }
 }
 
+/**
+ * Build the `jina-tools` plugin Config — the module-level schema Cordis
+ * validates the loader row against and the settings service projects into a
+ * form.
+ *
+ * Why duck-typed: the plugin runs out of tree and must not depend on the
+ * harness package graph, so this node implements exactly the surface the
+ * runtime touches, rather than importing `@deepseek-ai/schemastery`:
+ *
+ *   - `~standard.validate(value)` — Cordis `resolveConfig` (vendor/cordis
+ *     `fiber.ts`) validates every entry config through the Standard Schema
+ *     interface and throws `ValidationError` on `issues`. Returning a
+ *     normalized `value` keeps a hand-edited profile patch from ever breaking
+ *     the load.
+ *   - `toJSON()` / `dict` / `meta` — the settings service
+ *     (`packages/settings/settings/src/schema.ts`) requires `'toJSON' in
+ *     Config`, rehydrates the envelope with `new Schema(toJSON())`, and walks
+ *     `meta`/`dict` to build the form. The root `meta.volatile` marks the
+ *     section live-editable, which is what makes `settings.mutate` accept a
+ *     write for this namespace instead of remounting the entry.
+ *   - the call form `schema(value) -> resolved value` — retained because the
+ *     same node is the namespace's normalizer in tests and diagnostics.
+ *
+ * Shape note (verified against vendored schemastery 3.18.2): a dict entry must
+ * carry `meta`, otherwise the rehydrated resolver dereferences `meta` on
+ * undefined (`new Schema(serialized)` assigns the serialized dict verbatim —
+ * plain objects are never converted into nodes).
+ *
+ * @returns the schemastery-compatible Config node for the `jina-tools` entry.
+ */
 export function createSettingsSchema() {
   const dict = {
-    [PROXY_SETTING_FIELD]: { type: 'string', meta: {} },
-    defaultPreset: { type: 'string', meta: {} },
-    defaultSearchNum: { type: 'number', meta: {} },
+    [PROXY_SETTING_FIELD]: { type: 'string', meta: { default: '' } },
+    defaultPreset: { type: 'string', meta: { default: 'agent' } },
+    defaultSearchNum: { type: 'number', meta: { default: 5 } },
     defaultTokenBudget: { type: 'number', meta: {} },
-    defaultEngine: { type: 'string', meta: {} },
-    defaultRetainImages: { type: 'string', meta: {} },
-    defaultWaitForSelector: { type: 'string', meta: {} },
-    defaultTargetSelector: { type: 'string', meta: {} },
-    defaultRemoveSelector: { type: 'string', meta: {} },
-    defaultNoCache: { type: 'boolean', meta: {} },
-    autoBypassCloudflare: { type: 'boolean', meta: {} },
-    defaultRemoveOverlay: { type: 'boolean', meta: {} },
-    defaultDetachInvisibles: { type: 'boolean', meta: {} },
-    defaultWithShadowDom: { type: 'boolean', meta: {} },
-    defaultWithIframe: { type: 'boolean', meta: {} },
+    defaultEngine: { type: 'string', meta: { default: 'auto' } },
+    defaultRetainImages: { type: 'string', meta: { default: 'none' } },
+    defaultWaitForSelector: { type: 'string', meta: { default: '' } },
+    defaultTargetSelector: { type: 'string', meta: { default: DEFAULT_TARGET_SELECTORS } },
+    defaultRemoveSelector: { type: 'string', meta: { default: DEFAULT_REMOVE_SELECTORS } },
+    defaultNoCache: { type: 'boolean', meta: { default: false } },
+    autoBypassCloudflare: { type: 'boolean', meta: { default: true } },
+    defaultRemoveOverlay: { type: 'boolean', meta: { default: true } },
+    defaultDetachInvisibles: { type: 'boolean', meta: { default: true } },
+    defaultWithShadowDom: { type: 'boolean', meta: { default: false } },
+    defaultWithIframe: { type: 'boolean', meta: { default: false } },
+    adversarialResearch: { type: 'boolean', meta: { default: false } },
   }
-  const serialized = () => ({ type: 'object', dict })
+  const meta = { volatile: true }
+  /**
+   * The serialized envelope, always freshly cloned.
+   *
+   * `new Schema(serialized)` in the settings service assigns `meta`/`dict`
+   * objects by reference and then walks them destructively (`delete
+   * node.meta.volatile`, default rewriting). Handing out the live objects would
+   * let the first `describe()` strip `meta.volatile` from this Config, after
+   * which `isVolatilePath()` returns false and every card write is rejected as
+   * "not volatile". The envelope is therefore cloned per call.
+   */
+  const serialized = () => ({
+    type: 'object',
+    meta: { ...meta },
+    dict: Object.fromEntries(Object.entries(dict).map(([key, node]) => [key, { ...node, meta: { ...node.meta } }])),
+  })
   const node = (value) => {
     const section = value !== null && typeof value === 'object' ? value : {}
     const out = {}
@@ -407,13 +442,21 @@ export function createSettingsSchema() {
     if (typeof section.defaultDetachInvisibles === 'boolean') out.defaultDetachInvisibles = section.defaultDetachInvisibles
     if (typeof section.defaultWithShadowDom === 'boolean') out.defaultWithShadowDom = section.defaultWithShadowDom
     if (typeof section.defaultWithIframe === 'boolean') out.defaultWithIframe = section.defaultWithIframe
+    if (typeof section.adversarialResearch === 'boolean') out.adversarialResearch = section.adversarialResearch
     return out
   }
   return Object.assign(node, {
     type: 'object',
     dict,
-    meta: {},
+    meta,
     inner: undefined,
     toJSON() { return serialized() },
+    '~standard': {
+      version: 1,
+      vendor: 'dsh-jina',
+      // Cordis throws on `issues`; normalization never has any, so a stored
+      // section that drifted (wrong types, unknown keys) still loads.
+      validate(value) { return { value: node(value) } },
+    },
   })
 }
